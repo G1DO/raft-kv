@@ -30,6 +30,9 @@ type Raft struct {
 	// Election
 	electionTimer  *time.Timer   // fires when election timeout expires
 	votesReceived  int           // count of votes when candidate
+
+	// Heartbeat (leader only)
+	heartbeatTimer *time.Timer   // fires to send heartbeats to followers
 }
 
 func NewRaft(id string,peers []string) *Raft{
@@ -144,7 +147,69 @@ func (r *Raft) becomeLeader() {
 		r.electionTimer.Stop() // leaders don't need election timer
 	}
 
-	// TODO: Start sending heartbeats to all peers
+	// Start sending heartbeats to all peers
+	r.startHeartbeats()
+}
+
+// startHeartbeats begins the heartbeat loop (leader only)
+// Sends heartbeat to all peers every 50ms
+func (r *Raft) startHeartbeats() {
+	// Send immediately, then repeat every 50ms
+	r.sendHeartbeats()
+
+	r.heartbeatTimer = time.AfterFunc(50*time.Millisecond, func() {
+		r.mu.Lock()
+		if r.state != Leader {
+			r.mu.Unlock()
+			return // not leader anymore, stop heartbeats
+		}
+		r.mu.Unlock()
+
+		// Send heartbeats and schedule next round
+		r.startHeartbeats()
+	})
+}
+
+// sendHeartbeats sends a heartbeat to all peers
+func (r *Raft) sendHeartbeats() {
+	for _, peer := range r.peers {
+		go r.sendHeartbeat(peer)
+	}
+}
+
+// sendHeartbeat sends a heartbeat to one peer
+func (r *Raft) sendHeartbeat(peer string) {
+	r.mu.Lock()
+	args := AppendEntriesArgs{
+		Term:     r.currentTerm,
+		LeaderID: r.id,
+	}
+	r.mu.Unlock()
+
+	// TODO: Actually send over network (for now just a placeholder)
+	// reply := AppendEntriesReply{}
+	// ok := r.callRPC(peer, "Raft.AppendEntries", &args, &reply)
+
+	_ = args
+	_ = peer
+}
+
+// handleAppendEntriesResponse processes a heartbeat response from a peer
+func (r *Raft) handleAppendEntriesResponse(reply *AppendEntriesReply) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// If reply has higher term, step down to follower
+	if reply.Term > r.currentTerm {
+		r.currentTerm = reply.Term
+		r.state = Follower
+		r.votedFor = ""
+
+		// Stop heartbeat timer since we're no longer leader
+		if r.heartbeatTimer != nil {
+			r.heartbeatTimer.Stop()
+		}
+	}
 }
 
 // RequestVoteArgs is what a candidate sends when asking for votes
@@ -186,4 +251,45 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		r.votedFor = args.CandidateID
 		reply.VoteGranted = true
 	}
+}
+
+// AppendEntriesArgs is what leader sends (heartbeat or log entries)
+type AppendEntriesArgs struct {
+	Term     int    // leader's term
+	LeaderID string // so follower knows who the leader is
+}
+
+// AppendEntriesReply is the response to AppendEntries
+type AppendEntriesReply struct {
+	Term    int  // follower's current term
+	Success bool // true if follower accepted
+}
+
+// AppendEntries handles incoming heartbeats (and later, log entries) from leader
+func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Always tell them our term
+	reply.Term = r.currentTerm
+	reply.Success = false
+
+	// Rule 1: If leader's term < my term, reject (they're outdated)
+	if args.Term < r.currentTerm {
+		return
+	}
+
+	// Rule 2: If leader's term >= my term, accept them as leader
+	if args.Term > r.currentTerm {
+		r.currentTerm = args.Term
+		r.votedFor = ""
+	}
+
+	// Step down to follower (even if we were candidate or leader)
+	r.state = Follower
+
+	// Reset election timer - leader is alive!
+	r.resetElectionTimer()
+
+	reply.Success = true
 }

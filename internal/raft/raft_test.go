@@ -219,3 +219,88 @@ func TestElectionTimeout(t *testing.T) {
 		t.Errorf("expected term >= 1, got %d", r.currentTerm)
 	}
 }
+
+func TestAppendEntries_AcceptsValidHeartbeat(t *testing.T) {
+	r := NewRaft("node1", []string{"node2", "node3"})
+	r.currentTerm = 1
+
+	args := &AppendEntriesArgs{
+		Term:     1,
+		LeaderID: "node2",
+	}
+	reply := &AppendEntriesReply{}
+
+	r.AppendEntries(args, reply)
+
+	if !reply.Success {
+		t.Error("expected heartbeat to be accepted")
+	}
+	if r.state != Follower {
+		t.Errorf("expected Follower state, got %d", r.state)
+	}
+}
+
+func TestAppendEntries_RejectsOldTerm(t *testing.T) {
+	r := NewRaft("node1", []string{"node2", "node3"})
+	r.currentTerm = 5
+
+	args := &AppendEntriesArgs{
+		Term:     3, // old term
+		LeaderID: "node2",
+	}
+	reply := &AppendEntriesReply{}
+
+	r.AppendEntries(args, reply)
+
+	if reply.Success {
+		t.Error("expected heartbeat to be rejected (old term)")
+	}
+	if reply.Term != 5 {
+		t.Errorf("expected reply term 5, got %d", reply.Term)
+	}
+}
+
+func TestAppendEntries_UpdatesTermAndStepsDown(t *testing.T) {
+	r := NewRaft("node1", []string{"node2", "node3"})
+	r.currentTerm = 1
+	r.state = Candidate // was running for election
+
+	args := &AppendEntriesArgs{
+		Term:     3, // higher term
+		LeaderID: "node2",
+	}
+	reply := &AppendEntriesReply{}
+
+	r.AppendEntries(args, reply)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.currentTerm != 3 {
+		t.Errorf("expected term 3, got %d", r.currentTerm)
+	}
+	if r.state != Follower {
+		t.Errorf("expected Follower state, got %d", r.state)
+	}
+	if !reply.Success {
+		t.Error("expected heartbeat to be accepted")
+	}
+}
+
+func TestBecomeLeader_StartsHeartbeats(t *testing.T) {
+	r := NewRaft("node1", []string{"node2", "node3"})
+	r.state = Candidate
+	r.currentTerm = 1
+
+	r.becomeLeader()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state != Leader {
+		t.Errorf("expected Leader state, got %d", r.state)
+	}
+	if r.heartbeatTimer == nil {
+		t.Error("expected heartbeatTimer to be set")
+	}
+}
