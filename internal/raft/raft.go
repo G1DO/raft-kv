@@ -4,6 +4,8 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+	"encoding/json"
+    "net"
 )
 
 type State int
@@ -33,6 +35,10 @@ type Raft struct {
 
 	// Heartbeat (leader only)
 	heartbeatTimer *time.Timer   // fires to send heartbeats to followers
+
+	// Networking
+	rpcAddr  string       // address this node listens on for RPCs
+	listener net.Listener // TCP listener for incoming RPCs
 }
 
 func NewRaft(id string,peers []string) *Raft{
@@ -101,13 +107,15 @@ func (r *Raft) sendRequestVote(peer string) {
 	}
 	r.mu.Unlock()
 
-	// TODO: Actually send over network (for now just a placeholder)
-	// reply := RequestVoteReply{}
-	// ok := r.callRPC(peer, "Raft.RequestVote", &args, &reply)
+	// Send the RPC
+	var reply RequestVoteReply
+	ok := r.callRPC(peer, "RequestVote", &args, &reply)
+	if !ok {
+		return // peer unreachable, ignore
+	}
 
-	// For now, simulate: we'll add real networking later
-	_ = args
-	_ = peer
+	// Process the response
+	r.handleVoteResponse(&reply)
 }
 
 // handleVoteResponse processes a vote response from a peer
@@ -186,12 +194,15 @@ func (r *Raft) sendHeartbeat(peer string) {
 	}
 	r.mu.Unlock()
 
-	// TODO: Actually send over network (for now just a placeholder)
-	// reply := AppendEntriesReply{}
-	// ok := r.callRPC(peer, "Raft.AppendEntries", &args, &reply)
+	// Send the RPC
+	var reply AppendEntriesReply
+	ok := r.callRPC(peer, "AppendEntries", &args, &reply)
+	if !ok {
+		return // peer unreachable, ignore
+	}
 
-	_ = args
-	_ = peer
+	// Process the response
+	r.handleAppendEntriesResponse(&reply)
 }
 
 // handleAppendEntriesResponse processes a heartbeat response from a peer
@@ -292,4 +303,118 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	r.resetElectionTimer()
 
 	reply.Success = true
+}
+
+// RPCMessage wraps all RPC requests
+type RPCMessage struct {
+    Type string
+    Data json.RawMessage
+}
+
+// RPCResponse wraps all RPC responses
+type RPCResponse struct {
+    Data json.RawMessage
+}
+
+// StartRPCServer starts listening for incoming RPCs from other nodes
+func (r *Raft) StartRPCServer(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+
+	r.listener = listener
+	r.rpcAddr = listener.Addr().String()
+
+	// Handle incoming connections in background
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			go r.handleRPC(conn)
+		}
+	}()
+
+	return nil
+}
+
+// handleRPC processes one incoming RPC request
+func (r *Raft) handleRPC(conn net.Conn) {
+	defer conn.Close()
+
+	// Decode the incoming message
+	decoder := json.NewDecoder(conn)
+	var msg RPCMessage
+	if err := decoder.Decode(&msg); err != nil {
+		return
+	}
+
+	// Route to the right handler based on Type
+	var response RPCResponse
+
+	switch msg.Type {
+	case "RequestVote":
+		var args RequestVoteArgs
+		json.Unmarshal(msg.Data, &args)
+		var reply RequestVoteReply
+		r.RequestVote(&args, &reply)
+		response.Data, _ = json.Marshal(reply)
+
+	case "AppendEntries":
+		var args AppendEntriesArgs
+		json.Unmarshal(msg.Data, &args)
+		var reply AppendEntriesReply
+		r.AppendEntries(&args, &reply)
+		response.Data, _ = json.Marshal(reply)
+	}
+
+	// Send response back
+	encoder := json.NewEncoder(conn)
+	encoder.Encode(response)
+}
+
+// callRPC sends an RPC to a peer and waits for response
+// Returns false if the call failed (network error, timeout, etc.)
+func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply interface{}) bool {
+	// Connect to peer
+	conn, err := net.DialTimeout("tcp", peer, 500*time.Millisecond)
+	if err != nil {
+		return false // peer unreachable
+	}
+	defer conn.Close()
+
+	// Set deadline for the whole RPC
+	conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+
+	// Encode args to JSON
+	argsData, err := json.Marshal(args)
+	if err != nil {
+		return false
+	}
+
+	// Send the request
+	msg := RPCMessage{
+		Type: rpcType,
+		Data: argsData,
+	}
+	encoder := json.NewEncoder(conn)
+	if err := encoder.Encode(msg); err != nil {
+		return false
+	}
+
+	// Read the response
+	decoder := json.NewDecoder(conn)
+	var response RPCResponse
+	if err := decoder.Decode(&response); err != nil {
+		return false
+	}
+
+	// Decode response into reply
+	if err := json.Unmarshal(response.Data, reply); err != nil {
+		return false
+	}
+
+	return true
 }

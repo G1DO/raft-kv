@@ -304,3 +304,117 @@ func TestBecomeLeader_StartsHeartbeats(t *testing.T) {
 		t.Error("expected heartbeatTimer to be set")
 	}
 }
+
+func TestRPC_RequestVoteOverNetwork(t *testing.T) {
+	// Create two nodes
+	node1 := NewRaft("node1", []string{})
+	node2 := NewRaft("node2", []string{})
+
+	// Start RPC servers
+	err := node1.StartRPCServer("localhost:0") // port 0 = random available port
+	if err != nil {
+		t.Fatalf("node1 failed to start: %v", err)
+	}
+	defer node1.listener.Close()
+
+	err = node2.StartRPCServer("localhost:0")
+	if err != nil {
+		t.Fatalf("node2 failed to start: %v", err)
+	}
+	defer node2.listener.Close()
+
+	// node1 sends RequestVote to node2
+	args := &RequestVoteArgs{
+		Term:        1,
+		CandidateID: "node1",
+	}
+	var reply RequestVoteReply
+
+	ok := node1.callRPC(node2.rpcAddr, "RequestVote", args, &reply)
+
+	if !ok {
+		t.Fatal("RPC call failed")
+	}
+	if !reply.VoteGranted {
+		t.Error("expected vote to be granted")
+	}
+}
+
+func TestRPC_AppendEntriesOverNetwork(t *testing.T) {
+	// Create two nodes
+	leader := NewRaft("leader", []string{})
+	follower := NewRaft("follower", []string{})
+	follower.currentTerm = 1
+
+	// Start RPC servers
+	leader.StartRPCServer("localhost:0")
+	defer leader.listener.Close()
+
+	follower.StartRPCServer("localhost:0")
+	defer follower.listener.Close()
+
+	// Start follower's election timer (so AppendEntries can reset it)
+	follower.resetElectionTimer()
+
+	// Leader sends heartbeat to follower
+	args := &AppendEntriesArgs{
+		Term:     1,
+		LeaderID: "leader",
+	}
+	var reply AppendEntriesReply
+
+	ok := leader.callRPC(follower.rpcAddr, "AppendEntries", args, &reply)
+
+	if !ok {
+		t.Fatal("RPC call failed")
+	}
+	if !reply.Success {
+		t.Error("expected heartbeat to succeed")
+	}
+}
+
+func TestCluster_ElectsLeader(t *testing.T) {
+	// Create 3 nodes - we'll set peers after getting their addresses
+	node1 := NewRaft("node1", nil)
+	node2 := NewRaft("node2", nil)
+	node3 := NewRaft("node3", nil)
+
+	// Start RPC servers
+	node1.StartRPCServer("localhost:0")
+	node2.StartRPCServer("localhost:0")
+	node3.StartRPCServer("localhost:0")
+
+	defer node1.listener.Close()
+	defer node2.listener.Close()
+	defer node3.listener.Close()
+
+	// Now set peers with actual addresses
+	node1.peers = []string{node2.rpcAddr, node3.rpcAddr}
+	node2.peers = []string{node1.rpcAddr, node3.rpcAddr}
+	node3.peers = []string{node1.rpcAddr, node2.rpcAddr}
+
+	// Start election timers on all nodes
+	node1.resetElectionTimer()
+	node2.resetElectionTimer()
+	node3.resetElectionTimer()
+
+	// Wait for election to happen (max 500ms for timeout + some buffer)
+	time.Sleep(800 * time.Millisecond)
+
+	// Count leaders
+	leaderCount := 0
+	nodes := []*Raft{node1, node2, node3}
+
+	for _, n := range nodes {
+		n.mu.Lock()
+		if n.state == Leader {
+			leaderCount++
+			t.Logf("%s is the leader (term %d)", n.id, n.currentTerm)
+		}
+		n.mu.Unlock()
+	}
+
+	if leaderCount != 1 {
+		t.Errorf("expected exactly 1 leader, got %d", leaderCount)
+	}
+}
