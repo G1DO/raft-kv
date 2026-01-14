@@ -39,6 +39,17 @@ type Raft struct {
 	// Networking
 	rpcAddr  string       // address this node listens on for RPCs
 	listener net.Listener // TCP listener for incoming RPCs
+
+	// Log replication
+log         []LogEntry // the log entries
+commitIndex int        // highest entry known to be committed  
+lastApplied int        // highest entry applied to state machine
+
+// Leader state (reinitialized after election)
+nextIndex  map[string]int // for each peer: index of next entry to send
+matchIndex map[string]int // for each peer: highest entry known to be replicated
+
+
 }
 
 func NewRaft(id string,peers []string) *Raft{
@@ -268,6 +279,12 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 type AppendEntriesArgs struct {
 	Term     int    // leader's term
 	LeaderID string // so follower knows who the leader is
+
+	// Log replication fields
+	PrevLogIndex int        // index of entry immediately before new ones
+	PrevLogTerm  int        // term of PrevLogIndex entry
+	Entries      []LogEntry // entries to store (empty for heartbeat)
+	LeaderCommit int        // leader's commitIndex
 }
 
 // AppendEntriesReply is the response to AppendEntries
@@ -417,4 +434,9 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 	}
 
 	return true
+}
+// LogEntry represents one entry in the Raft log
+type LogEntry struct {
+    Term    int    // term when entry was received by leader
+    Command []byte // the command (e.g., "PUT foo bar")
 }
