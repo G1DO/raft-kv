@@ -166,6 +166,15 @@ func (r *Raft) becomeLeader() {
 		r.electionTimer.Stop() // leaders don't need election timer
 	}
 
+	// Initialize nextIndex and matchIndex for all peers
+	r.nextIndex = make(map[string]int)
+	r.matchIndex = make(map[string]int)
+
+	for _, peer := range r.peers {
+		r.nextIndex[peer] = len(r.log) + 1 // optimistic: assume peer is caught up
+		r.matchIndex[peer] = 0             // pessimistic: nothing confirmed yet
+	}
+
 	// Start sending heartbeats to all peers
 	r.startHeartbeats()
 }
@@ -196,12 +205,35 @@ func (r *Raft) sendHeartbeats() {
 	}
 }
 
-// sendHeartbeat sends a heartbeat to one peer
+// sendHeartbeat sends a heartbeat (with log entries) to one peer
 func (r *Raft) sendHeartbeat(peer string) {
 	r.mu.Lock()
+
+	// Step 1: Get nextIndex for this peer
+	nextIdx := r.nextIndex[peer]
+
+	// Step 2: Calculate PrevLogIndex and PrevLogTerm
+	// PrevLogIndex = entry right before what we're sending
+	prevLogIndex := nextIdx - 1
+	prevLogTerm := 0
+	if prevLogIndex > 0 && prevLogIndex <= len(r.log) {
+		prevLogTerm = r.log[prevLogIndex-1].Term // -1 because log is 0-indexed
+	}
+
+	// Step 3: Get entries to send (from nextIndex to end of log)
+	var entries []LogEntry
+	if nextIdx <= len(r.log) {
+		entries = r.log[nextIdx-1:] // -1 because log is 0-indexed
+	}
+	
+	// Step 4: Build the args with all fields
 	args := AppendEntriesArgs{
-		Term:     r.currentTerm,
-		LeaderID: r.id,
+		Term:         r.currentTerm,
+		LeaderID:     r.id,
+		PrevLogIndex: prevLogIndex,
+		PrevLogTerm:  prevLogTerm,
+		Entries:      entries,
+		LeaderCommit: r.commitIndex,
 	}
 	r.mu.Unlock()
 
@@ -211,6 +243,10 @@ func (r *Raft) sendHeartbeat(peer string) {
 	if !ok {
 		return // peer unreachable, ignore
 	}
+
+	// TODO 5: Handle success/failure differently
+	// If success: update nextIndex[peer] and matchIndex[peer]
+	// If failure: decrement nextIndex[peer] and retry (log inconsistency)
 
 	// Process the response
 	r.handleAppendEntriesResponse(&reply)
@@ -293,7 +329,7 @@ type AppendEntriesReply struct {
 	Success bool // true if follower accepted
 }
 
-// AppendEntries handles incoming heartbeats (and later, log entries) from leader
+// AppendEntries handles incoming heartbeats and log entries from leader
 func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -318,6 +354,27 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 
 	// Reset election timer - leader is alive!
 	r.resetElectionTimer()
+
+	// Log consistency check
+	// If PrevLogIndex > 0, we need to verify we have that entry with matching term
+	if args.PrevLogIndex > 0 {
+		// Check: do we have an entry at PrevLogIndex?
+		if args.PrevLogIndex > len(r.log) {
+			return // we don't have this entry, reject
+		}
+		// Check: does the term match?
+		if r.log[args.PrevLogIndex-1].Term != args.PrevLogTerm {
+			return // term mismatch, reject
+		}
+	}
+
+	// Append new entries (if any)
+	// First, remove any conflicting entries after PrevLogIndex
+	if args.PrevLogIndex < len(r.log) {
+		r.log = r.log[:args.PrevLogIndex] // truncate
+	}
+	// Then append the new entries
+	r.log = append(r.log, args.Entries...)
 
 	reply.Success = true
 }
@@ -439,4 +496,30 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 type LogEntry struct {
     Term    int    // term when entry was received by leader
     Command []byte // the command (e.g., "PUT foo bar")
+}
+// AppendCommand adds a new command to the leader's log.
+// Returns the index where stored, the term, and whether this node is the leader.
+// If not leader, client should retry with another node.
+func (r *Raft) AppendCommand(command []byte) (index int, term int, isLeader bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state != Leader {
+		return 0, 0, false
+	}
+
+	// Create new log entry with current term
+	entry := LogEntry{
+		Term:    r.currentTerm,
+		Command: command,
+	}
+
+	// Append to our log slice (Array data structure)
+	r.log = append(r.log, entry)
+
+	// Return index (1-based), term, and true (we are leader)
+	index = len(r.log)
+	term = r.currentTerm
+	isLeader = true
+	return
 }

@@ -418,3 +418,77 @@ func TestCluster_ElectsLeader(t *testing.T) {
 		t.Errorf("expected exactly 1 leader, got %d", leaderCount)
 	}
 }
+
+// Test: When becoming leader, nextIndex and matchIndex are initialized
+func TestBecomeLeader_InitializesLogIndices(t *testing.T) {
+	r := NewRaft("node1", []string{"node2", "node3"})
+
+	// Add some entries to the log (simulate previous terms)
+	r.log = []LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+		{Term: 1, Command: []byte("cmd2")},
+	}
+
+	// Become leader
+	r.mu.Lock()
+	r.state = Candidate
+	r.currentTerm = 2
+	r.becomeLeader()
+	r.mu.Unlock()
+
+	// Check nextIndex: should be len(log) + 1 = 3 for each peer
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, peer := range r.peers {
+		if r.nextIndex[peer] != 3 {
+			t.Errorf("nextIndex[%s] = %d, want 3", peer, r.nextIndex[peer])
+		}
+		if r.matchIndex[peer] != 0 {
+			t.Errorf("matchIndex[%s] = %d, want 0", peer, r.matchIndex[peer])
+		}
+	}
+}
+
+// Test: Leader sends correct PrevLogIndex, PrevLogTerm, Entries in AppendEntries
+func TestSendHeartbeat_IncludesLogEntries(t *testing.T) {
+	// Create leader with 2 log entries
+	leader := NewRaft("leader", []string{})
+	leader.state = Leader
+	leader.currentTerm = 2
+	leader.log = []LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+		{Term: 2, Command: []byte("cmd2")},
+	}
+
+	// Create follower (empty log)
+	follower := NewRaft("follower", []string{})
+	follower.currentTerm = 2
+
+	// Start RPC servers
+	leader.StartRPCServer("localhost:0")
+	defer leader.listener.Close()
+	follower.StartRPCServer("localhost:0")
+	defer follower.listener.Close()
+
+	// Initialize leader's tracking for follower
+	// nextIndex = 1 means "send from entry 1" (follower has nothing)
+	leader.nextIndex = map[string]int{follower.rpcAddr: 1}
+	leader.matchIndex = map[string]int{follower.rpcAddr: 0}
+
+	// Leader sends heartbeat (which should include entries)
+	leader.peers = []string{follower.rpcAddr}
+	follower.resetElectionTimer() // so AppendEntries can reset it
+	leader.sendHeartbeat(follower.rpcAddr)
+
+	// Give it a moment
+	time.Sleep(50 * time.Millisecond)
+
+	// Check: follower should have the entries now
+	follower.mu.Lock()
+	defer follower.mu.Unlock()
+
+	if len(follower.log) != 2 {
+		t.Errorf("follower log length = %d, want 2", len(follower.log))
+	}
+}
