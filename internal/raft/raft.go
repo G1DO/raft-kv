@@ -69,9 +69,31 @@ func NewRaft(id string, peers []string, applyCh chan ApplyMsg,logPath string,sta
   if err != nil {
     panic(err)  // or handle properly later
 	}
+
+	
+	// Load saved state (term/votedFor) if it exists
+savedState, err := LoadRaftState(statePath)
+if err != nil {
+    panic(err)  // or handle properly
+}
+
+// Replay log entries from disk
+entries, err := persistentLog.Replay()
+if err != nil {
+	panic(err)
+}
+
+// Convert bytes back to LogEntry
+var logEntries []LogEntry
+for _, data := range entries {
+	var entry LogEntry
+	json.Unmarshal(data, &entry)
+	logEntries = append(logEntries, entry)
+}
+
 	r := &Raft{
-		currentTerm:   0,
-		votedFor:      "",
+		currentTerm:   savedState.CurrentTerm,
+		votedFor:      savedState.VotedFor,
 		state:         Follower,
 		id:            id,
 		peers:         peers,
@@ -79,6 +101,7 @@ func NewRaft(id string, peers []string, applyCh chan ApplyMsg,logPath string,sta
 		applyCh:       applyCh,
 		persistentLog: persistentLog,
 		statePath:     statePath,
+		log:           logEntries,
 	}
 	return r
 }
@@ -503,7 +526,13 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 	// Then append the new entries
 	r.log = append(r.log, args.Entries...)
-	
+
+	// Persist new entries to disk
+	for _, entry := range args.Entries {
+		data, _ := json.Marshal(entry)
+		r.persistentLog.Append(data)
+	}
+
 	reply.Success = true
 
 	// Update commitIndex if leader has committed more
@@ -656,6 +685,10 @@ func (r *Raft) AppendCommand(command []byte) (index int, term int, isLeader bool
 
 	// Append to our log slice (Array data structure)
 	r.log = append(r.log, entry)
+
+	// Persist to disk
+	data, _ := json.Marshal(entry)
+	r.persistentLog.Append(data)
 
 	// Return index (1-based), term, and true (we are leader)
 	index = len(r.log)

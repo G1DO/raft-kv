@@ -1,12 +1,35 @@
 package raft
 
 import (
+	"fmt"
+	"os"
 	"testing"
 	"time"
 )
 
+// Helper to create a Raft node with temp persistence files
+func newTestRaft(t *testing.T, id string, peers []string, applyCh chan ApplyMsg) *Raft {
+	// Create temp directory for this test
+	tempDir, err := os.MkdirTemp("", "raft-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+
+	logPath := fmt.Sprintf("%s/%s.log", tempDir, id)
+	statePath := fmt.Sprintf("%s/%s.state", tempDir, id)
+
+	r := NewRaft(id, peers, applyCh, logPath, statePath)
+
+	// Register cleanup
+	t.Cleanup(func() {
+		os.RemoveAll(tempDir)
+	})
+
+	return r
+}
+
 func TestNewRaft(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 
 	if r.id != "node1" {
 		t.Errorf("expected id node1, got %s", r.id)
@@ -26,7 +49,7 @@ func TestNewRaft(t *testing.T) {
 }
 
 func TestStartElection(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 
 	// Manually call startElection
 	r.startElection()
@@ -53,7 +76,7 @@ func TestStartElection(t *testing.T) {
 }
 
 func TestRequestVote_GrantsVote(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 1
 
 	args := &RequestVoteArgs{
@@ -76,7 +99,7 @@ func TestRequestVote_GrantsVote(t *testing.T) {
 }
 
 func TestRequestVote_RejectsLowerTerm(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 5
 
 	args := &RequestVoteArgs{
@@ -96,7 +119,7 @@ func TestRequestVote_RejectsLowerTerm(t *testing.T) {
 }
 
 func TestRequestVote_RejectsIfAlreadyVoted(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 2
 	r.votedFor = "node3" // already voted for node3
 
@@ -117,7 +140,7 @@ func TestRequestVote_RejectsIfAlreadyVoted(t *testing.T) {
 }
 
 func TestRequestVote_GrantsIfAlreadyVotedForSame(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 2
 	r.votedFor = "node2" // already voted for node2
 
@@ -135,7 +158,7 @@ func TestRequestVote_GrantsIfAlreadyVotedForSame(t *testing.T) {
 }
 
 func TestHandleVoteResponse_CountsVotes(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.state = Candidate
 	r.currentTerm = 1
 	r.votesReceived = 1 // voted for self
@@ -156,7 +179,7 @@ func TestHandleVoteResponse_CountsVotes(t *testing.T) {
 }
 
 func TestHandleVoteResponse_BecomesLeaderWithMajority(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil) // 3 nodes total
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil) // 3 nodes total
 	r.state = Candidate
 	r.currentTerm = 1
 	r.votesReceived = 1 // voted for self
@@ -177,7 +200,7 @@ func TestHandleVoteResponse_BecomesLeaderWithMajority(t *testing.T) {
 }
 
 func TestHandleVoteResponse_StepsDownOnHigherTerm(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.state = Candidate
 	r.currentTerm = 1
 
@@ -200,7 +223,7 @@ func TestHandleVoteResponse_StepsDownOnHigherTerm(t *testing.T) {
 }
 
 func TestElectionTimeout(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 
 	// Start election timer
 	r.resetElectionTimer()
@@ -221,7 +244,7 @@ func TestElectionTimeout(t *testing.T) {
 }
 
 func TestAppendEntries_AcceptsValidHeartbeat(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 1
 
 	args := &AppendEntriesArgs{
@@ -241,7 +264,7 @@ func TestAppendEntries_AcceptsValidHeartbeat(t *testing.T) {
 }
 
 func TestAppendEntries_RejectsOldTerm(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 5
 
 	args := &AppendEntriesArgs{
@@ -261,7 +284,7 @@ func TestAppendEntries_RejectsOldTerm(t *testing.T) {
 }
 
 func TestAppendEntries_UpdatesTermAndStepsDown(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 1
 	r.state = Candidate // was running for election
 
@@ -288,7 +311,7 @@ func TestAppendEntries_UpdatesTermAndStepsDown(t *testing.T) {
 }
 
 func TestBecomeLeader_StartsHeartbeats(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 	r.state = Candidate
 	r.currentTerm = 1
 
@@ -307,8 +330,8 @@ func TestBecomeLeader_StartsHeartbeats(t *testing.T) {
 
 func TestRPC_RequestVoteOverNetwork(t *testing.T) {
 	// Create two nodes
-	node1 := NewRaft("node1", []string{}, nil)
-	node2 := NewRaft("node2", []string{}, nil)
+	node1 := newTestRaft(t, "node1", []string{}, nil)
+	node2 := newTestRaft(t, "node2", []string{}, nil)
 
 	// Start RPC servers
 	err := node1.StartRPCServer("localhost:0") // port 0 = random available port
@@ -342,8 +365,8 @@ func TestRPC_RequestVoteOverNetwork(t *testing.T) {
 
 func TestRPC_AppendEntriesOverNetwork(t *testing.T) {
 	// Create two nodes
-	leader := NewRaft("leader", []string{}, nil)
-	follower := NewRaft("follower", []string{}, nil)
+	leader := newTestRaft(t, "leader", []string{}, nil)
+	follower := newTestRaft(t, "follower", []string{}, nil)
 	follower.currentTerm = 1
 
 	// Start RPC servers
@@ -375,9 +398,9 @@ func TestRPC_AppendEntriesOverNetwork(t *testing.T) {
 
 func TestCluster_ElectsLeader(t *testing.T) {
 	// Create 3 nodes - we'll set peers after getting their addresses
-	node1 := NewRaft("node1", nil, nil)
-	node2 := NewRaft("node2", nil, nil)
-	node3 := NewRaft("node3", nil, nil)
+	node1 := newTestRaft(t, "node1", nil, nil)
+	node2 := newTestRaft(t, "node2", nil, nil)
+	node3 := newTestRaft(t, "node3", nil, nil)
 
 	// Start RPC servers
 	node1.StartRPCServer("localhost:0")
@@ -421,7 +444,7 @@ func TestCluster_ElectsLeader(t *testing.T) {
 
 // Test: When becoming leader, nextIndex and matchIndex are initialized
 func TestBecomeLeader_InitializesLogIndices(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}, nil)
+	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 
 	// Add some entries to the log (simulate previous terms)
 	r.log = []LogEntry{
@@ -453,7 +476,7 @@ func TestBecomeLeader_InitializesLogIndices(t *testing.T) {
 // Test: Leader sends correct PrevLogIndex, PrevLogTerm, Entries in AppendEntries
 func TestSendHeartbeat_IncludesLogEntries(t *testing.T) {
 	// Create leader with 2 log entries
-	leader := NewRaft("leader", []string{}, nil)
+	leader := newTestRaft(t, "leader", []string{}, nil)
 	leader.state = Leader
 	leader.currentTerm = 2
 	leader.log = []LogEntry{
@@ -462,7 +485,7 @@ func TestSendHeartbeat_IncludesLogEntries(t *testing.T) {
 	}
 
 	// Create follower (empty log)
-	follower := NewRaft("follower", []string{}, nil)
+	follower := newTestRaft(t, "follower", []string{}, nil)
 	follower.currentTerm = 2
 
 	// Start RPC servers
@@ -496,7 +519,7 @@ func TestSendHeartbeat_IncludesLogEntries(t *testing.T) {
 // Test: Leader updates nextIndex and matchIndex after successful replication
 func TestLeader_UpdatesIndicesOnSuccess(t *testing.T) {
 	// Create leader with 2 log entries
-	leader := NewRaft("leader", []string{}, nil)
+	leader := newTestRaft(t, "leader", []string{}, nil)
 	leader.state = Leader
 	leader.currentTerm = 2
 	leader.log = []LogEntry{
@@ -505,7 +528,7 @@ func TestLeader_UpdatesIndicesOnSuccess(t *testing.T) {
 	}
 
 	// Create follower
-	follower := NewRaft("follower", []string{}, nil)
+	follower := newTestRaft(t, "follower", []string{}, nil)
 	follower.currentTerm = 2
 
 	// Start RPC servers
@@ -543,7 +566,7 @@ func TestLeader_UpdatesIndicesOnSuccess(t *testing.T) {
 // Test: Leader commits entry when majority have it
 func TestLeader_CommitsOnMajority(t *testing.T) {
 	// Create leader with 2 log entries (term 2)
-	leader := NewRaft("leader", []string{}, nil)
+	leader := newTestRaft(t, "leader", []string{}, nil)
 	leader.state = Leader
 	leader.currentTerm = 2
 	leader.log = []LogEntry{
@@ -553,9 +576,9 @@ func TestLeader_CommitsOnMajority(t *testing.T) {
 	leader.commitIndex = 0 // nothing committed yet
 
 	// Create 2 followers (3-node cluster)
-	follower1 := NewRaft("follower1", []string{}, nil)
+	follower1 := newTestRaft(t, "follower1", []string{}, nil)
 	follower1.currentTerm = 2
-	follower2 := NewRaft("follower2", []string{}, nil)
+	follower2 := newTestRaft(t, "follower2", []string{}, nil)
 	follower2.currentTerm = 2
 
 	// Start RPC servers
@@ -603,7 +626,7 @@ func TestApplyChannel_ReceivesCommittedEntries(t *testing.T) {
 	applyCh := make(chan ApplyMsg, 10)
 
 	// Create leader with apply channel
-	leader := NewRaft("leader", []string{}, applyCh)
+	leader := newTestRaft(t, "leader", []string{}, applyCh)
 	leader.state = Leader
 	leader.currentTerm = 2
 	leader.log = []LogEntry{
@@ -614,7 +637,7 @@ func TestApplyChannel_ReceivesCommittedEntries(t *testing.T) {
 	leader.lastApplied = 0
 
 	// Create follower
-	follower := NewRaft("follower", []string{}, nil)
+	follower := newTestRaft(t, "follower", []string{}, nil)
 	follower.currentTerm = 2
 
 	// Start RPC servers
@@ -655,5 +678,98 @@ func TestApplyChannel_ReceivesCommittedEntries(t *testing.T) {
 	}
 	if string(msg2.Command) != "PUT baz qux" {
 		t.Errorf("msg2.Command = %s, want 'PUT baz qux'", msg2.Command)
+	}
+}
+
+// ============ NEW PERSISTENCE TESTS ============
+
+// Test: State is persisted when term changes
+func TestPersistence_TermIsSaved(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "raft-persist-*")
+	defer os.RemoveAll(tempDir)
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+
+	// Create node, start election (increments term)
+	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r1.startElection() // term becomes 1
+
+	// Create new node with same paths - should restore state
+	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+
+	if r2.currentTerm != 1 {
+		t.Errorf("expected restored term=1, got %d", r2.currentTerm)
+	}
+}
+
+// Test: VotedFor is persisted
+func TestPersistence_VotedForIsSaved(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "raft-persist-*")
+	defer os.RemoveAll(tempDir)
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+
+	// Create node, start election (votes for self)
+	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r1.startElection() // votes for node1
+
+	// Create new node with same paths - should restore state
+	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+
+	if r2.votedFor != "node1" {
+		t.Errorf("expected restored votedFor=node1, got %s", r2.votedFor)
+	}
+}
+
+// Test: Log entries are persisted
+func TestPersistence_LogEntriesAreSaved(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "raft-persist-*")
+	defer os.RemoveAll(tempDir)
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+
+	// Create leader and append entries
+	r1 := NewRaft("leader", []string{}, nil, logPath, statePath)
+	r1.state = Leader
+	r1.currentTerm = 1
+	r1.AppendCommand([]byte("PUT foo bar"))
+	r1.AppendCommand([]byte("PUT baz qux"))
+
+	// Create new node with same paths - should restore log
+	r2 := NewRaft("leader", []string{}, nil, logPath, statePath)
+
+	if len(r2.log) != 2 {
+		t.Errorf("expected 2 log entries, got %d", len(r2.log))
+	}
+	if string(r2.log[0].Command) != "PUT foo bar" {
+		t.Errorf("expected first command 'PUT foo bar', got '%s'", r2.log[0].Command)
+	}
+	if string(r2.log[1].Command) != "PUT baz qux" {
+		t.Errorf("expected second command 'PUT baz qux', got '%s'", r2.log[1].Command)
+	}
+}
+
+// Test: Fresh start with no existing files
+func TestPersistence_FreshStart(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "raft-fresh-*")
+	defer os.RemoveAll(tempDir)
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+
+	// Create node - no existing files
+	r := NewRaft("node1", []string{}, nil, logPath, statePath)
+
+	if r.currentTerm != 0 {
+		t.Errorf("expected term=0 on fresh start, got %d", r.currentTerm)
+	}
+	if r.votedFor != "" {
+		t.Errorf("expected votedFor='' on fresh start, got %s", r.votedFor)
+	}
+	if len(r.log) != 0 {
+		t.Errorf("expected empty log on fresh start, got %d entries", len(r.log))
 	}
 }
