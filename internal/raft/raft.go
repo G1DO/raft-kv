@@ -119,9 +119,18 @@ r.currentTerm++
 // sendRequestVote sends a vote request to one peer
 func (r *Raft) sendRequestVote(peer string) {
 	r.mu.Lock()
+
+	//calculate last log index and term
+	lastLogIndex := len(r.log)
+    lastLogTerm := 0
+    if lastLogIndex > 0 {
+        lastLogTerm = r.log[lastLogIndex-1].Term
+    }
 	args := RequestVoteArgs{
 		Term:        r.currentTerm,
 		CandidateID: r.id,
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm, 
 	}
 	r.mu.Unlock()
 
@@ -134,6 +143,7 @@ func (r *Raft) sendRequestVote(peer string) {
 
 	// Process the response
 	r.handleVoteResponse(&reply)
+
 }
 
 // handleVoteResponse processes a vote response from a peer
@@ -345,12 +355,15 @@ func (r *Raft) applyCommitted() {
 type RequestVoteArgs struct {
 	Term        int    // candidate's term
 	CandidateID string // who is asking for vote
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // RequestVoteReply is the response to a vote request
 type RequestVoteReply struct {
 	Term        int  // responder's current term (so candidate can update if behind)
 	VoteGranted bool // true = you got my vote
+	
 }
 
 // RequestVote handles incoming vote requests from candidates
@@ -373,6 +386,24 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		r.currentTerm = args.Term  // update to their term
 		r.state = Follower         // step down
 		r.votedFor = ""            // new term = can vote again
+	}
+	// Get my last log info
+	myLastLogIndex := len(r.log)
+	myLastLogTerm := 0
+	if myLastLogIndex > 0 {
+		myLastLogTerm = r.log[myLastLogIndex-1].Term
+	}
+
+	// Check if candidate's log is at least as up-to-date as mine
+	candidateUpToDate := false
+	if args.LastLogTerm > myLastLogTerm {
+		candidateUpToDate = true
+	} else if args.LastLogTerm == myLastLogTerm && args.LastLogIndex >= myLastLogIndex {
+		candidateUpToDate = true
+	}
+
+	if !candidateUpToDate {
+		return // reject - candidate's log is behind mine
 	}
 
 	// Rule 3: Grant vote if I haven't voted OR already voted for this candidate
@@ -446,8 +477,20 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 	// Then append the new entries
 	r.log = append(r.log, args.Entries...)
-
+	
 	reply.Success = true
+
+	// Update commitIndex if leader has committed more
+	if args.LeaderCommit > r.commitIndex {
+		// Take the minimum: can't commit more than we have
+		if args.LeaderCommit < len(r.log) {
+			r.commitIndex = args.LeaderCommit
+		} else {
+			r.commitIndex = len(r.log)
+		}
+		// Apply newly committed entries
+		r.applyCommitted()
+	}
 }
 
 // RPCMessage wraps all RPC requests
@@ -594,3 +637,4 @@ func (r *Raft) AppendCommand(command []byte) (index int, term int, isLeader bool
 	isLeader = true
 	return
 }
+
