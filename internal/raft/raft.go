@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"github.com/G1DO/raft-kv/internal/log"
 	"math/rand"
 	"sync"
 	"time"
@@ -56,11 +57,18 @@ type Raft struct {
 
 	// Channel to send committed commands to application
 	applyCh chan ApplyMsg
+	// Persistence
+    persistentLog *log.Log  // persistent storage for log entries
+    statePath     string    // path to state file (term/votedFor)
 }
 
 // NewRaft creates a new Raft node
 // applyCh is optional - if nil, committed commands won't be sent anywhere
-func NewRaft(id string, peers []string, applyCh chan ApplyMsg) *Raft {
+func NewRaft(id string, peers []string, applyCh chan ApplyMsg,logPath string,statePath string) *Raft {
+	persistentLog, err := log.NewLog(logPath)
+  if err != nil {
+    panic(err)  // or handle properly later
+	}
 	r := &Raft{
 		currentTerm:   0,
 		votedFor:      "",
@@ -69,8 +77,20 @@ func NewRaft(id string, peers []string, applyCh chan ApplyMsg) *Raft {
 		peers:         peers,
 		votesReceived: 0,
 		applyCh:       applyCh,
+		persistentLog: persistentLog,
+		statePath:     statePath,
 	}
 	return r
+}
+
+// persist saves currentTerm and votedFor to disk
+// Called whenever these values change
+func (r *Raft) persist() {
+	state := RaftState{
+		CurrentTerm: r.currentTerm,
+		VotedFor:    r.votedFor,
+	}
+	SaveRaftState(r.statePath, state)
 }
 
 // resetElectionTimer sets a new random timeout (150-300ms)
@@ -104,6 +124,7 @@ r.currentTerm++
 	// Vote for yourself
 	r.votedFor = r.id
 	r.votesReceived = 1
+	r.persist() // save term and vote to disk
 
 	r.mu.Unlock()
 
@@ -156,6 +177,7 @@ func (r *Raft) handleVoteResponse(reply *RequestVoteReply) {
 		r.currentTerm = reply.Term
 		r.state = Follower
 		r.votedFor = ""
+		r.persist() // save term and vote to disk
 		return
 	}
 
@@ -273,6 +295,7 @@ func (r *Raft) sendHeartbeat(peer string) {
 		r.currentTerm = reply.Term
 		r.state = Follower
 		r.votedFor = ""
+		r.persist() // save term and vote to disk
 		if r.heartbeatTimer != nil {
 			r.heartbeatTimer.Stop()
 		}
@@ -386,6 +409,7 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		r.currentTerm = args.Term  // update to their term
 		r.state = Follower         // step down
 		r.votedFor = ""            // new term = can vote again
+		r.persist() // save term and vote to disk
 	}
 	// Get my last log info
 	myLastLogIndex := len(r.log)
@@ -409,6 +433,7 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Rule 3: Grant vote if I haven't voted OR already voted for this candidate
 	if r.votedFor == "" || r.votedFor == args.CandidateID {
 		r.votedFor = args.CandidateID
+		r.persist() // save vote to disk
 		reply.VoteGranted = true
 	}
 }
@@ -449,6 +474,7 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	if args.Term > r.currentTerm {
 		r.currentTerm = args.Term
 		r.votedFor = ""
+		r.persist() // save term and vote to disk
 	}
 
 	// Step down to follower (even if we were candidate or leader)
