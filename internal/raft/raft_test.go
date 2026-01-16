@@ -6,7 +6,7 @@ import (
 )
 
 func TestNewRaft(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 
 	if r.id != "node1" {
 		t.Errorf("expected id node1, got %s", r.id)
@@ -26,7 +26,7 @@ func TestNewRaft(t *testing.T) {
 }
 
 func TestStartElection(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 
 	// Manually call startElection
 	r.startElection()
@@ -53,7 +53,7 @@ func TestStartElection(t *testing.T) {
 }
 
 func TestRequestVote_GrantsVote(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 1
 
 	args := &RequestVoteArgs{
@@ -76,7 +76,7 @@ func TestRequestVote_GrantsVote(t *testing.T) {
 }
 
 func TestRequestVote_RejectsLowerTerm(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 5
 
 	args := &RequestVoteArgs{
@@ -96,7 +96,7 @@ func TestRequestVote_RejectsLowerTerm(t *testing.T) {
 }
 
 func TestRequestVote_RejectsIfAlreadyVoted(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 2
 	r.votedFor = "node3" // already voted for node3
 
@@ -117,7 +117,7 @@ func TestRequestVote_RejectsIfAlreadyVoted(t *testing.T) {
 }
 
 func TestRequestVote_GrantsIfAlreadyVotedForSame(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 2
 	r.votedFor = "node2" // already voted for node2
 
@@ -135,7 +135,7 @@ func TestRequestVote_GrantsIfAlreadyVotedForSame(t *testing.T) {
 }
 
 func TestHandleVoteResponse_CountsVotes(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.state = Candidate
 	r.currentTerm = 1
 	r.votesReceived = 1 // voted for self
@@ -156,7 +156,7 @@ func TestHandleVoteResponse_CountsVotes(t *testing.T) {
 }
 
 func TestHandleVoteResponse_BecomesLeaderWithMajority(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"}) // 3 nodes total
+	r := NewRaft("node1", []string{"node2", "node3"}, nil) // 3 nodes total
 	r.state = Candidate
 	r.currentTerm = 1
 	r.votesReceived = 1 // voted for self
@@ -177,7 +177,7 @@ func TestHandleVoteResponse_BecomesLeaderWithMajority(t *testing.T) {
 }
 
 func TestHandleVoteResponse_StepsDownOnHigherTerm(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.state = Candidate
 	r.currentTerm = 1
 
@@ -200,7 +200,7 @@ func TestHandleVoteResponse_StepsDownOnHigherTerm(t *testing.T) {
 }
 
 func TestElectionTimeout(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 
 	// Start election timer
 	r.resetElectionTimer()
@@ -221,7 +221,7 @@ func TestElectionTimeout(t *testing.T) {
 }
 
 func TestAppendEntries_AcceptsValidHeartbeat(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 1
 
 	args := &AppendEntriesArgs{
@@ -241,7 +241,7 @@ func TestAppendEntries_AcceptsValidHeartbeat(t *testing.T) {
 }
 
 func TestAppendEntries_RejectsOldTerm(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 5
 
 	args := &AppendEntriesArgs{
@@ -261,7 +261,7 @@ func TestAppendEntries_RejectsOldTerm(t *testing.T) {
 }
 
 func TestAppendEntries_UpdatesTermAndStepsDown(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.currentTerm = 1
 	r.state = Candidate // was running for election
 
@@ -288,7 +288,7 @@ func TestAppendEntries_UpdatesTermAndStepsDown(t *testing.T) {
 }
 
 func TestBecomeLeader_StartsHeartbeats(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 	r.state = Candidate
 	r.currentTerm = 1
 
@@ -307,8 +307,8 @@ func TestBecomeLeader_StartsHeartbeats(t *testing.T) {
 
 func TestRPC_RequestVoteOverNetwork(t *testing.T) {
 	// Create two nodes
-	node1 := NewRaft("node1", []string{})
-	node2 := NewRaft("node2", []string{})
+	node1 := NewRaft("node1", []string{}, nil)
+	node2 := NewRaft("node2", []string{}, nil)
 
 	// Start RPC servers
 	err := node1.StartRPCServer("localhost:0") // port 0 = random available port
@@ -342,8 +342,8 @@ func TestRPC_RequestVoteOverNetwork(t *testing.T) {
 
 func TestRPC_AppendEntriesOverNetwork(t *testing.T) {
 	// Create two nodes
-	leader := NewRaft("leader", []string{})
-	follower := NewRaft("follower", []string{})
+	leader := NewRaft("leader", []string{}, nil)
+	follower := NewRaft("follower", []string{}, nil)
 	follower.currentTerm = 1
 
 	// Start RPC servers
@@ -375,9 +375,9 @@ func TestRPC_AppendEntriesOverNetwork(t *testing.T) {
 
 func TestCluster_ElectsLeader(t *testing.T) {
 	// Create 3 nodes - we'll set peers after getting their addresses
-	node1 := NewRaft("node1", nil)
-	node2 := NewRaft("node2", nil)
-	node3 := NewRaft("node3", nil)
+	node1 := NewRaft("node1", nil, nil)
+	node2 := NewRaft("node2", nil, nil)
+	node3 := NewRaft("node3", nil, nil)
 
 	// Start RPC servers
 	node1.StartRPCServer("localhost:0")
@@ -421,7 +421,7 @@ func TestCluster_ElectsLeader(t *testing.T) {
 
 // Test: When becoming leader, nextIndex and matchIndex are initialized
 func TestBecomeLeader_InitializesLogIndices(t *testing.T) {
-	r := NewRaft("node1", []string{"node2", "node3"})
+	r := NewRaft("node1", []string{"node2", "node3"}, nil)
 
 	// Add some entries to the log (simulate previous terms)
 	r.log = []LogEntry{
@@ -453,7 +453,7 @@ func TestBecomeLeader_InitializesLogIndices(t *testing.T) {
 // Test: Leader sends correct PrevLogIndex, PrevLogTerm, Entries in AppendEntries
 func TestSendHeartbeat_IncludesLogEntries(t *testing.T) {
 	// Create leader with 2 log entries
-	leader := NewRaft("leader", []string{})
+	leader := NewRaft("leader", []string{}, nil)
 	leader.state = Leader
 	leader.currentTerm = 2
 	leader.log = []LogEntry{
@@ -462,7 +462,7 @@ func TestSendHeartbeat_IncludesLogEntries(t *testing.T) {
 	}
 
 	// Create follower (empty log)
-	follower := NewRaft("follower", []string{})
+	follower := NewRaft("follower", []string{}, nil)
 	follower.currentTerm = 2
 
 	// Start RPC servers
@@ -490,5 +490,170 @@ func TestSendHeartbeat_IncludesLogEntries(t *testing.T) {
 
 	if len(follower.log) != 2 {
 		t.Errorf("follower log length = %d, want 2", len(follower.log))
+	}
+}
+
+// Test: Leader updates nextIndex and matchIndex after successful replication
+func TestLeader_UpdatesIndicesOnSuccess(t *testing.T) {
+	// Create leader with 2 log entries
+	leader := NewRaft("leader", []string{}, nil)
+	leader.state = Leader
+	leader.currentTerm = 2
+	leader.log = []LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+		{Term: 2, Command: []byte("cmd2")},
+	}
+
+	// Create follower
+	follower := NewRaft("follower", []string{}, nil)
+	follower.currentTerm = 2
+
+	// Start RPC servers
+	leader.StartRPCServer("localhost:0")
+	defer leader.listener.Close()
+	follower.StartRPCServer("localhost:0")
+	defer follower.listener.Close()
+
+	// Initialize leader's tracking - follower has nothing
+	leader.nextIndex = map[string]int{follower.rpcAddr: 1}
+	leader.matchIndex = map[string]int{follower.rpcAddr: 0}
+	leader.peers = []string{follower.rpcAddr}
+
+	follower.resetElectionTimer()
+	leader.sendHeartbeat(follower.rpcAddr)
+
+	// Give it a moment
+	time.Sleep(50 * time.Millisecond)
+
+	// Check: leader should have updated indices
+	leader.mu.Lock()
+	defer leader.mu.Unlock()
+
+	// After sending 2 entries successfully:
+	// matchIndex should be 2 (follower confirmed entries 1 and 2)
+	// nextIndex should be 3 (next entry to send)
+	if leader.matchIndex[follower.rpcAddr] != 2 {
+		t.Errorf("matchIndex = %d, want 2", leader.matchIndex[follower.rpcAddr])
+	}
+	if leader.nextIndex[follower.rpcAddr] != 3 {
+		t.Errorf("nextIndex = %d, want 3", leader.nextIndex[follower.rpcAddr])
+	}
+}
+
+// Test: Leader commits entry when majority have it
+func TestLeader_CommitsOnMajority(t *testing.T) {
+	// Create leader with 2 log entries (term 2)
+	leader := NewRaft("leader", []string{}, nil)
+	leader.state = Leader
+	leader.currentTerm = 2
+	leader.log = []LogEntry{
+		{Term: 2, Command: []byte("cmd1")},
+		{Term: 2, Command: []byte("cmd2")},
+	}
+	leader.commitIndex = 0 // nothing committed yet
+
+	// Create 2 followers (3-node cluster)
+	follower1 := NewRaft("follower1", []string{}, nil)
+	follower1.currentTerm = 2
+	follower2 := NewRaft("follower2", []string{}, nil)
+	follower2.currentTerm = 2
+
+	// Start RPC servers
+	leader.StartRPCServer("localhost:0")
+	defer leader.listener.Close()
+	follower1.StartRPCServer("localhost:0")
+	defer follower1.listener.Close()
+	follower2.StartRPCServer("localhost:0")
+	defer follower2.listener.Close()
+
+	// Initialize leader's tracking
+	leader.peers = []string{follower1.rpcAddr, follower2.rpcAddr}
+	leader.nextIndex = map[string]int{
+		follower1.rpcAddr: 1,
+		follower2.rpcAddr: 1,
+	}
+	leader.matchIndex = map[string]int{
+		follower1.rpcAddr: 0,
+		follower2.rpcAddr: 0,
+	}
+
+	// Start election timers on followers
+	follower1.resetElectionTimer()
+	follower2.resetElectionTimer()
+
+	// Leader sends heartbeats to both
+	leader.sendHeartbeat(follower1.rpcAddr)
+	leader.sendHeartbeat(follower2.rpcAddr)
+
+	// Wait for replication
+	time.Sleep(100 * time.Millisecond)
+
+	// Check: commitIndex should be 2 (majority have both entries)
+	leader.mu.Lock()
+	defer leader.mu.Unlock()
+
+	if leader.commitIndex != 2 {
+		t.Errorf("commitIndex = %d, want 2", leader.commitIndex)
+	}
+}
+
+// Test: Committed entries are sent to applyCh
+func TestApplyChannel_ReceivesCommittedEntries(t *testing.T) {
+	// Create apply channel with buffer
+	applyCh := make(chan ApplyMsg, 10)
+
+	// Create leader with apply channel
+	leader := NewRaft("leader", []string{}, applyCh)
+	leader.state = Leader
+	leader.currentTerm = 2
+	leader.log = []LogEntry{
+		{Term: 2, Command: []byte("PUT foo bar")},
+		{Term: 2, Command: []byte("PUT baz qux")},
+	}
+	leader.commitIndex = 0
+	leader.lastApplied = 0
+
+	// Create follower
+	follower := NewRaft("follower", []string{}, nil)
+	follower.currentTerm = 2
+
+	// Start RPC servers
+	leader.StartRPCServer("localhost:0")
+	defer leader.listener.Close()
+	follower.StartRPCServer("localhost:0")
+	defer follower.listener.Close()
+
+	// Initialize leader's tracking
+	leader.peers = []string{follower.rpcAddr}
+	leader.nextIndex = map[string]int{follower.rpcAddr: 1}
+	leader.matchIndex = map[string]int{follower.rpcAddr: 0}
+
+	follower.resetElectionTimer()
+	leader.sendHeartbeat(follower.rpcAddr)
+
+	// Wait for replication
+	time.Sleep(100 * time.Millisecond)
+
+	// Check: should receive 2 ApplyMsg
+	if len(applyCh) != 2 {
+		t.Errorf("applyCh has %d messages, want 2", len(applyCh))
+	}
+
+	// Verify first message
+	msg1 := <-applyCh
+	if msg1.CommandIndex != 1 {
+		t.Errorf("msg1.CommandIndex = %d, want 1", msg1.CommandIndex)
+	}
+	if string(msg1.Command) != "PUT foo bar" {
+		t.Errorf("msg1.Command = %s, want 'PUT foo bar'", msg1.Command)
+	}
+
+	// Verify second message
+	msg2 := <-applyCh
+	if msg2.CommandIndex != 2 {
+		t.Errorf("msg2.CommandIndex = %d, want 2", msg2.CommandIndex)
+	}
+	if string(msg2.Command) != "PUT baz qux" {
+		t.Errorf("msg2.Command = %s, want 'PUT baz qux'", msg2.Command)
 	}
 }

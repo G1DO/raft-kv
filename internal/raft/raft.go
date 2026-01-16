@@ -16,13 +16,18 @@ const (
 	Leader
 )
 
+// ApplyMsg is sent to the application when a command is committed
+type ApplyMsg struct {
+	CommandIndex int    // index of the committed command
+	Command      []byte // the command to apply
+}
+
 type Raft struct {
 	mu sync.Mutex // protects all fields below (concurrency safety)
 
 	// Persistent state (must survive crash)
 	currentTerm int    // latest term this node has seen
 	votedFor    string // nodeID we voted for in current term ("" if none)
-    //Can vote for only one (including yourself)
 
 	// Volatile state
 	state State  // Follower, Candidate, or Leader
@@ -30,40 +35,42 @@ type Raft struct {
 	peers []string // other nodes' addresses
 
 	// Election
-	electionTimer  *time.Timer   // fires when election timeout expires
-	votesReceived  int           // count of votes when candidate
+	electionTimer  *time.Timer // fires when election timeout expires
+	votesReceived  int         // count of votes when candidate
 
 	// Heartbeat (leader only)
-	heartbeatTimer *time.Timer   // fires to send heartbeats to followers
+	heartbeatTimer *time.Timer // fires to send heartbeats to followers
 
 	// Networking
 	rpcAddr  string       // address this node listens on for RPCs
 	listener net.Listener // TCP listener for incoming RPCs
 
 	// Log replication
-log         []LogEntry // the log entries
-commitIndex int        // highest entry known to be committed  
-lastApplied int        // highest entry applied to state machine
+	log         []LogEntry // the log entries
+	commitIndex int        // highest entry known to be committed
+	lastApplied int        // highest entry applied to state machine
 
-// Leader state (reinitialized after election)
-nextIndex  map[string]int // for each peer: index of next entry to send
-matchIndex map[string]int // for each peer: highest entry known to be replicated
+	// Leader state (reinitialized after election)
+	nextIndex  map[string]int // for each peer: index of next entry to send
+	matchIndex map[string]int // for each peer: highest entry known to be replicated
 
-
+	// Channel to send committed commands to application
+	applyCh chan ApplyMsg
 }
 
-func NewRaft(id string,peers []string) *Raft{
-	// Create struct and return and init all values 
+// NewRaft creates a new Raft node
+// applyCh is optional - if nil, committed commands won't be sent anywhere
+func NewRaft(id string, peers []string, applyCh chan ApplyMsg) *Raft {
 	r := &Raft{
-        currentTerm:   0,
-        votedFor:      "",
-        state:         Follower,
-        id:            id,
-        peers:         peers,
-        votesReceived: 0,
-    }
+		currentTerm:   0,
+		votedFor:      "",
+		state:         Follower,
+		id:            id,
+		peers:         peers,
+		votesReceived: 0,
+		applyCh:       applyCh,
+	}
 	return r
-
 }
 
 // resetElectionTimer sets a new random timeout (150-300ms)
@@ -225,7 +232,7 @@ func (r *Raft) sendHeartbeat(peer string) {
 	if nextIdx <= len(r.log) {
 		entries = r.log[nextIdx-1:] // -1 because log is 0-indexed
 	}
-	
+
 	// Step 4: Build the args with all fields
 	args := AppendEntriesArgs{
 		Term:         r.currentTerm,
@@ -235,6 +242,9 @@ func (r *Raft) sendHeartbeat(peer string) {
 		Entries:      entries,
 		LeaderCommit: r.commitIndex,
 	}
+
+	// Save these for updating indices after RPC
+	numEntries := len(entries)
 	r.mu.Unlock()
 
 	// Send the RPC
@@ -244,29 +254,90 @@ func (r *Raft) sendHeartbeat(peer string) {
 		return // peer unreachable, ignore
 	}
 
-	// TODO 5: Handle success/failure differently
-	// If success: update nextIndex[peer] and matchIndex[peer]
-	// If failure: decrement nextIndex[peer] and retry (log inconsistency)
-
-	// Process the response
-	r.handleAppendEntriesResponse(&reply)
-}
-
-// handleAppendEntriesResponse processes a heartbeat response from a peer
-func (r *Raft) handleAppendEntriesResponse(reply *AppendEntriesReply) {
+	// Step 5: Handle success/failure
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// If reply has higher term, step down to follower
+	// If reply has higher term, step down
 	if reply.Term > r.currentTerm {
 		r.currentTerm = reply.Term
 		r.state = Follower
 		r.votedFor = ""
-
-		// Stop heartbeat timer since we're no longer leader
 		if r.heartbeatTimer != nil {
 			r.heartbeatTimer.Stop()
 		}
+		return
+	}
+
+	// Only update if we're still leader
+	if r.state != Leader {
+		return
+	}
+
+	if reply.Success {
+		// Follower accepted - update indices
+		// matchIndex = prevLogIndex + number of entries sent
+		r.matchIndex[peer] = prevLogIndex + numEntries
+		// nextIndex = matchIndex + 1
+		r.nextIndex[peer] = r.matchIndex[peer] + 1
+
+		// Check if we can commit new entries
+		r.updateCommitIndex()
+	} else {
+		// Follower rejected - back off nextIndex
+		if r.nextIndex[peer] > 1 {
+			r.nextIndex[peer]--
+		}
+	}
+}
+
+// updateCommitIndex checks if any new entries can be committed
+// An entry is committed when majority of cluster has it
+// Only commits entries from current term (Raft safety rule)
+func (r *Raft) updateCommitIndex() {
+	// For each index from commitIndex+1 to len(log)
+	for n := r.commitIndex + 1; n <= len(r.log); n++ {
+		// Only commit entries from current term
+		if r.log[n-1].Term != r.currentTerm {
+			continue
+		}
+
+		// Count how many peers have this entry
+		count := 1 // leader has it
+
+		for _, peer := range r.peers {
+			if r.matchIndex[peer] >= n {
+				count++
+			}
+		}
+
+		// Majority = more than half of cluster
+		clusterSize := len(r.peers) + 1
+		if count > clusterSize/2 {
+			r.commitIndex = n
+		}
+	}
+
+	// Apply newly committed entries
+	r.applyCommitted()
+}
+
+// applyCommitted sends committed entries to the application via applyCh
+// Called whenever commitIndex advances
+func (r *Raft) applyCommitted() {
+	// Skip if no channel configured
+	if r.applyCh == nil {
+		return
+	}
+
+	// Apply all entries from lastApplied+1 to commitIndex
+	for r.lastApplied < r.commitIndex {
+		r.lastApplied++
+		msg := ApplyMsg{
+			CommandIndex: r.lastApplied,
+			Command:      r.log[r.lastApplied-1].Command,
+		}
+		r.applyCh <- msg
 	}
 }
 
