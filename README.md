@@ -9,23 +9,25 @@ Multiple servers that agree on data, even when some crash or lose network connec
 This is how real systems like **etcd**, **CockroachDB**, and **TiKV** work under the hood. I built it to actually understand it, not just read about it.
 
 ```
-           Client
-              |
-              v
-    +------------------+
-    |     Leader       |-------- replicates to --------+
-    |    (Node 1)      |                               |
-    +------------------+                               |
-              |                                        |
-              |             +-------------+------------+------------+
-              |             |             |            |            |
-              v             v             v            v            v
-    +------------------+  +------------------+  +------------------+
-    |    Follower      |  |    Follower      |  |    Follower      |
-    |    (Node 2)      |  |    (Node 3)      |  |    (Node 4)      |
-    +------------------+  +------------------+  +------------------+
+                    Client
+                       |
+                       v
+                 +-----------+
+                 |  Leader   |
+                 |  Node 1   |
+                 +-----------+
+                       |
+         replicates to all followers
+                       |
+       +---------------+---------------+
+       |               |               |
+       v               v               v
+ +-----------+   +-----------+   +-----------+
+ | Follower  |   | Follower  |   | Follower  |
+ |  Node 2   |   |  Node 3   |   |  Node 4   |
+ +-----------+   +-----------+   +-----------+
 
-    If leader dies -> followers elect a new one -> no data loss
+ If leader dies -> followers elect new one -> no data loss
 ```
 
 ---
