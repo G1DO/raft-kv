@@ -12,6 +12,13 @@ type Command struct {
 	Op        string `json:"op"`        // the actual command: "PUT foo bar"
 }
 
+// kvSnapshot is used for JSON serialization (fields must be exported)
+type kvSnapshot struct {
+	Data        map[string]string `json:"data"`
+	LastRequest map[string]int64  `json:"lastRequest"`
+	LastResult  map[string]string `json:"lastResult"`
+}
+
 type KVStore struct {
 	data        map[string]string // the actual KV data
 	lastRequest map[string]int64  // clientId → last requestId processed
@@ -93,10 +100,25 @@ func (s *KVStore) executeOp(op string) string {
 }
 
 
-// Store is the state machine — an in-memory key-value map.
-// Rebuilt from log on startup.
-//
-// You will implement:
-//   - Apply(command) → result
-//   - Get(key) → value, exists
-//   - This must be deterministic — same commands = same state
+// Snapshot serializes the entire KVStore state to bytes.
+// This includes data AND duplicate detection state.
+func (s *KVStore) Snapshot() ([]byte, error) {
+	snap := kvSnapshot{
+		Data:        s.data,
+		LastRequest: s.lastRequest,
+		LastResult:  s.lastResult,
+	}
+	return json.Marshal(snap)
+}
+
+// Restore loads state from a snapshot, replacing current state.
+func (s *KVStore) Restore(data []byte) error {
+	var snap kvSnapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return err
+	}
+	s.data = snap.Data
+	s.lastRequest = snap.LastRequest
+	s.lastResult = snap.LastResult
+	return nil
+}

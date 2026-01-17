@@ -226,3 +226,72 @@ func TestDuplicateDetection_OldRequestIgnored(t *testing.T) {
 		t.Errorf("old request should be ignored: expected bar5, got %s", result)
 	}
 }
+
+func TestSnapshot_SaveAndRestore(t *testing.T) {
+	// 1. Create a store with some data
+	store1 := NewKVStore()
+	store1.Apply([]byte("PUT name alice"))
+	store1.Apply([]byte("PUT city tokyo"))
+	store1.Apply([]byte("PUT age 25"))
+
+	// 2. Take a snapshot
+	snapshot, err := store1.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot failed: %v", err)
+	}
+
+	// 3. Create a new empty store and restore
+	store2 := NewKVStore()
+	err = store2.Restore(snapshot)
+	if err != nil {
+		t.Fatalf("Restore failed: %v", err)
+	}
+
+	// 4. Verify all data is there
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{"name", "alice"},
+		{"city", "tokyo"},
+		{"age", "25"},
+	}
+
+	for _, tt := range tests {
+		result := store2.Apply([]byte("GET " + tt.key))
+		if result != tt.value {
+			t.Errorf("GET %s: expected %s, got %s", tt.key, tt.value, result)
+		}
+	}
+}
+
+func TestSnapshot_PreservesDuplicateDetection(t *testing.T) {
+	// 1. Create store and process a request with clientId
+	store1 := NewKVStore()
+	cmd := makeCommand("client-1", 5, "PUT counter 100")
+	store1.Apply(cmd)
+
+	// 2. Take snapshot
+	snapshot, _ := store1.Snapshot()
+
+	// 3. Restore to new store
+	store2 := NewKVStore()
+	store2.Restore(snapshot)
+
+	// 4. The duplicate detection should still work!
+	// Replaying request 5 should return cached result, not re-execute
+	result := store2.Apply(cmd)
+	if result != "OK" {
+		t.Errorf("expected cached OK, got %s", result)
+	}
+
+	// 5. Old request (id 3) should still be ignored
+	oldCmd := makeCommand("client-1", 3, "PUT counter 999")
+	store2.Apply(oldCmd)
+
+	// Counter should still be 100 (not 999)
+	get := makeCommand("client-1", 6, "GET counter")
+	if store2.Apply(get) != "100" {
+		t.Error("counter should still be 100 after old request")
+	}
+}

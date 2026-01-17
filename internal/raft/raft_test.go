@@ -773,3 +773,81 @@ func TestPersistence_FreshStart(t *testing.T) {
 		t.Errorf("expected empty log on fresh start, got %d entries", len(r.log))
 	}
 }
+
+func TestTakeSnapshot_DiscardsOldLogEntries(t *testing.T) {
+	r := newTestRaft(t, "node1", []string{}, nil)
+
+	// Manually add log entries (simulating committed commands)
+	// Entries at index 1, 2, 3, 4, 5
+	for i := 1; i <= 5; i++ {
+		r.log = append(r.log, LogEntry{
+			Term:    1,
+			Command: []byte(fmt.Sprintf("PUT key%d value%d", i, i)),
+		})
+	}
+
+	// Verify we have 5 entries
+	if len(r.log) != 5 {
+		t.Fatalf("expected 5 log entries, got %d", len(r.log))
+	}
+
+	// Take snapshot at index 3 (discard entries 1-3, keep 4-5)
+	snapshotData := []byte("fake snapshot data")
+	r.TakeSnapshot(3, snapshotData)
+
+	// Should have 2 entries left (indices 4 and 5)
+	if len(r.log) != 2 {
+		t.Errorf("expected 2 log entries after snapshot, got %d", len(r.log))
+	}
+
+	// Check snapshot metadata
+	if r.lastIncludedIndex != 3 {
+		t.Errorf("expected lastIncludedIndex=3, got %d", r.lastIncludedIndex)
+	}
+	if r.lastIncludedTerm != 1 {
+		t.Errorf("expected lastIncludedTerm=1, got %d", r.lastIncludedTerm)
+	}
+	if string(r.snapshotData) != "fake snapshot data" {
+		t.Errorf("snapshot data mismatch")
+	}
+}
+
+func TestTakeSnapshot_IndexConversion(t *testing.T) {
+	r := newTestRaft(t, "node1", []string{}, nil)
+
+	// Add 10 entries (indices 1-10)
+	for i := 1; i <= 10; i++ {
+		r.log = append(r.log, LogEntry{Term: 1, Command: []byte("cmd")})
+	}
+
+	// Snapshot at index 5
+	r.TakeSnapshot(5, []byte("snap1"))
+
+	// Now log has entries 6-10 (5 entries)
+	if len(r.log) != 5 {
+		t.Fatalf("expected 5 entries, got %d", len(r.log))
+	}
+
+	// Test index conversion
+	// Slice index 0 should be absolute index 6
+	if r.getLogIndex(0) != 6 {
+		t.Errorf("getLogIndex(0) should be 6, got %d", r.getLogIndex(0))
+	}
+
+	// Absolute index 8 should be slice index 2
+	if r.getSliceIndex(8) != 2 {
+		t.Errorf("getSliceIndex(8) should be 2, got %d", r.getSliceIndex(8))
+	}
+
+	// Snapshot again at index 8
+	r.TakeSnapshot(8, []byte("snap2"))
+
+	// Now log has entries 9-10 (2 entries)
+	if len(r.log) != 2 {
+		t.Errorf("expected 2 entries after second snapshot, got %d", len(r.log))
+	}
+
+	if r.lastIncludedIndex != 8 {
+		t.Errorf("expected lastIncludedIndex=8, got %d", r.lastIncludedIndex)
+	}
+}

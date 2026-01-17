@@ -60,6 +60,16 @@ type Raft struct {
 	// Persistence
     persistentLog *log.Log  // persistent storage for log entries
     statePath     string    // path to state file (term/votedFor)
+
+	// Snapshot metadata
+	// Think of it like a bank account:
+	// - Log = history of all deposits/withdrawals
+	// - State = current balance
+	// After a snapshot, we can delete old log entries because we have the result.
+	// But we need to remember WHERE the snapshot ends:
+	lastIncludedIndex int    // snapshot covers entries 1 through this index
+	lastIncludedTerm  int    // the term of the entry at lastIncludedIndex
+	snapshotData      []byte // the actual snapshot (serialized state machine)
 }
 
 // NewRaft creates a new Raft node
@@ -691,9 +701,59 @@ func (r *Raft) AppendCommand(command []byte) (index int, term int, isLeader bool
 	r.persistentLog.Append(data)
 
 	// Return index (1-based), term, and true (we are leader)
-	index = len(r.log)
+	index = len(r.log) + r.lastIncludedIndex
 	term = r.currentTerm
 	isLeader = true
 	return
+}
+
+// TakeSnapshot compacts the log by saving a snapshot.
+//
+// Think of it like a bank statement:
+// - Instead of keeping every transaction since account opening
+// - Just save "balance = $150 as of Dec 31"
+// - Now you can delete all transactions before Dec 31
+//
+// snapshotIndex: the last log index included in the snapshot
+// data: the serialized state machine (from KVStore.Snapshot())
+func (r *Raft) TakeSnapshot(snapshotIndex int, data []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Can't snapshot what we don't have or already snapshotted
+	if snapshotIndex <= r.lastIncludedIndex {
+		return
+	}
+
+	// Find the term of the entry we're snapshotting
+	// sliceIndex converts absolute index to our log slice index
+	sliceIndex := snapshotIndex - r.lastIncludedIndex - 1
+	if sliceIndex < 0 || sliceIndex >= len(r.log) {
+		return // invalid index
+	}
+	snapshotTerm := r.log[sliceIndex].Term
+
+	// Discard log entries up to and including snapshotIndex
+	// Keep entries AFTER snapshotIndex
+	r.log = r.log[sliceIndex+1:]
+
+	// Save snapshot metadata
+	r.lastIncludedIndex = snapshotIndex
+	r.lastIncludedTerm = snapshotTerm
+	r.snapshotData = data
+
+	// TODO: persist snapshot to disk (for crash recovery)
+}
+
+// getLogIndex converts slice index to absolute Raft index
+// Raft uses 1-based indexing, and after snapshot we may have discarded early entries
+func (r *Raft) getLogIndex(sliceIndex int) int {
+	return r.lastIncludedIndex + sliceIndex + 1
+}
+
+// getSliceIndex converts absolute Raft index to slice index
+// Returns -1 if index is in the snapshot (already discarded)
+func (r *Raft) getSliceIndex(logIndex int) int {
+	return logIndex - r.lastIncludedIndex - 1
 }
 
