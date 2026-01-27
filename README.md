@@ -135,6 +135,65 @@ Logs grow forever. After a while, you don't want to store every command since th
   Same state, way less storage.
 ```
 
+Snapshots are persisted to disk using an atomic write pattern (write to temp file, then rename) to prevent corruption during crashes.
+
+### InstallSnapshot RPC
+
+When a follower falls too far behind — the entries it needs have already been compacted — the leader sends its snapshot instead of log entries.
+
+```
+  Leader: "Your nextIndex is 100, but I compacted up to 900000."
+  Leader: "Here's my snapshot. Load this, then we continue."
+
+  Follower receives snapshot:
+    1. Verify term (reject stale leaders)
+    2. Persist snapshot to disk (crash safety)
+    3. Discard log entries covered by snapshot
+    4. Signal state machine to restore from snapshot
+    5. Update commitIndex and lastApplied
+```
+
+This is essential for adding new nodes to a cluster — they can't replay a log from the beginning of time.
+
+### Linearizable Reads (ReadIndex)
+
+Problem: A partitioned leader might serve stale data. It doesn't know it's been replaced.
+
+Solution: Before serving a read, confirm you're still leader.
+
+```
+  Client: GET x
+
+  Leader (maybe stale):
+    1. Record current commitIndex
+    2. Send heartbeat to all peers
+    3. Wait for majority to respond
+    4. If majority confirms -> serve read at commitIndex
+    5. If no majority -> reject (might be partitioned)
+```
+
+This guarantees reads see all committed writes, even during network partitions.
+
+### Dynamic Cluster Membership
+
+Servers can be added or removed at runtime using single-server changes. The key insight: changing one server at a time guarantees old and new majorities overlap.
+
+```
+  3-node cluster: [A, B, C]
+  Majority = 2
+
+  Adding D:
+  - Leader logs config change: AddServer(D)
+  - Config takes effect IMMEDIATELY (when logged, not committed)
+  - Now 4-node cluster: [A, B, C, D]
+  - New majority = 3
+  - Old majority (2) and new majority (3) overlap
+
+  This overlap prevents split-brain.
+```
+
+Config changes are stored in the log and replayed on restart. When a leader removes itself, it steps down to follower.
+
 ---
 
 ## Architecture
@@ -164,17 +223,25 @@ Logs grow forever. After a while, you don't want to store every command since th
   | +-----+------+ |  | +-----+------+ |  | +-----+------+ |
   |       |        |  |       |        |  |       |        |
   | +-----v------+ |  | +-----v------+ |  | +-----v------+ |
-  | |    Log     | |  | |    Log     | |  | |    Log     | |
+  | | Log + Snap | |  | | Log + Snap | |  | | Log + Snap | |
   | |   (disk)   | |  | |   (disk)   | |  | |   (disk)   | |
   | +------------+ |  | +------------+ |  | +------------+ |
   +----------------+  +----------------+  +----------------+
            |                   |                   |
            +-------------------+-------------------+
                                |
-                    AppendEntries / RequestVote RPCs
+              AppendEntries / RequestVote / InstallSnapshot RPCs
 ```
 
 The Raft module doesn't know anything about key-value operations. It just sees bytes. The KVStore interprets those bytes as PUT/GET/DELETE commands. This separation is important — Raft is a consensus algorithm, not a database.
+
+### RPC Types
+
+| RPC | Purpose | When Used |
+|-----|---------|-----------|
+| **RequestVote** | Request vote during election | Candidate to all peers |
+| **AppendEntries** | Heartbeat + log replication | Leader to followers (50ms interval) |
+| **InstallSnapshot** | Send snapshot to far-behind follower | Leader to follower when nextIndex <= lastIncludedIndex |
 
 ---
 
@@ -185,20 +252,32 @@ raft-kv/
 |-- cmd/server/          # Entry point
 |-- internal/
 |   |-- kv/              # Key-value state machine
-|   |   |-- store.go     # PUT/GET/DELETE + snapshots
+|   |   |-- store.go     # PUT/GET/DELETE + snapshots + dedup state
 |   |   +-- store_test.go
 |   |-- log/             # Persistent append-only log
 |   |   |-- log.go
 |   |   +-- log_test.go
 |   |-- raft/            # Consensus module
-|   |   |-- raft.go      # Election, replication, commit
-|   |   |-- state.go     # Persistence (term, votedFor)
+|   |   |-- raft.go      # Election, replication, snapshots, membership, ReadIndex
+|   |   |-- state.go     # Persistence (term, votedFor, snapshots)
 |   |   +-- *_test.go
 |   +-- server/          # TCP server, client handling
 |       |-- server.go
 |       +-- server_test.go
 +-- README.md
 ```
+
+### Key Types
+
+| Type | Location | Purpose |
+|------|----------|---------|
+| `Raft` | raft.go | Core consensus state machine |
+| `LogEntry` | raft.go | Log entry with term, command, and optional config change |
+| `ConfigChange` | raft.go | Membership change (add/remove server) |
+| `ApplyMsg` | raft.go | Message sent to state machine (command or snapshot) |
+| `KVStore` | store.go | State machine that interprets commands |
+| `RaftState` | state.go | Persisted term and votedFor |
+| `SnapshotState` | state.go | Persisted snapshot metadata and data |
 
 ---
 
@@ -257,6 +336,22 @@ I forgot this initially. After restoring from a snapshot, old duplicate requests
 
 After you snapshot and throw away log entries, `log[0]` isn't index 1 anymore. You need `lastIncludedIndex` to convert between array indices and logical Raft indices. Off-by-one errors everywhere until I got this right.
 
+**6. Config changes must take effect immediately**
+
+I initially thought membership changes should take effect when committed, like regular commands. Wrong. They take effect when *logged*. Why? Consider adding a fourth node: if you wait for commit, the new node might already be receiving entries but isn't counted in the majority calculation. The Raft paper is subtle here.
+
+**7. Single-server changes prevent split-brain**
+
+You can't add multiple servers at once. With 3 nodes, adding 2 simultaneously could let the new nodes form a majority (3/5) while the old nodes also have a majority (2/3). Disaster. One at a time guarantees old and new majorities always overlap.
+
+**8. ReadIndex needs to confirm leadership**
+
+A partitioned leader can keep serving reads forever without knowing it's been replaced. The solution is simple but non-obvious: before serving any read, send heartbeats and wait for majority response. If you can't reach a majority, you might be partitioned — reject the read.
+
+**9. Snapshot installation is where things get weird**
+
+When a follower receives a snapshot, it has to throw away its entire log and state machine. But what if there are log entries *after* the snapshot boundary? Keep them. And always persist the snapshot *before* updating in-memory state — crashes happen.
+
 ---
 
 ## What's done
@@ -265,12 +360,10 @@ After you snapshot and throw away log entries, `log[0]` isn't index 1 anymore. Y
 - [x] **Phase 2: Leader Election** — Terms, voting, election timeout, heartbeats
 - [x] **Phase 3: Log Replication** — AppendEntries, conflict resolution, commit logic
 - [x] **Phase 4: Safety** — Persistence, duplicate detection
-- [x] **Phase 5: Snapshots** — Log compaction, state serialization
-
-**Not implemented:**
-- InstallSnapshot RPC (sending snapshots to far-behind followers)
-- Cluster membership changes
-- Linearizable reads
+- [x] **Phase 5: Snapshots** — Log compaction, state serialization, snapshot persistence
+- [x] **Phase 6: InstallSnapshot RPC** — Snapshot transfer to far-behind followers
+- [x] **Phase 7: Linearizable Reads** — ReadIndex for consistent reads
+- [x] **Phase 8: Cluster Membership** — Dynamic add/remove servers
 
 ---
 
