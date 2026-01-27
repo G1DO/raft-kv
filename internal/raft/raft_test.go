@@ -1008,3 +1008,54 @@ func TestInstallSnapshot_IgnoresOlderSnapshot(t *testing.T) {
 		t.Errorf("snapshot data should be unchanged")
 	}
 }
+
+// Test: ReadIndex returns false for non-leader
+func TestReadIndex_RejectsNonLeader(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+	r.state = Follower
+
+	_, isLeader, _ := r.ReadIndex()
+
+	if isLeader {
+		t.Error("ReadIndex should return isLeader=false for follower")
+	}
+}
+
+// Test: ReadIndex succeeds for single-node leader
+func TestReadIndex_SingleNodeLeader(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.commitIndex = 5
+	r.lastApplied = 5
+
+	readIndex, isLeader, err := r.ReadIndex()
+
+	if !isLeader {
+		t.Error("ReadIndex should return isLeader=true for leader")
+	}
+	if err != nil {
+		t.Errorf("ReadIndex should succeed for single-node leader, got error: %v", err)
+	}
+	if readIndex != 5 {
+		t.Errorf("expected readIndex=5, got %d", readIndex)
+	}
+}
+
+// Test: ReadIndex fails if state machine not caught up
+func TestReadIndex_NotCaughtUp(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.commitIndex = 10
+	r.lastApplied = 5 // behind commitIndex
+
+	_, isLeader, err := r.ReadIndex()
+
+	if !isLeader {
+		t.Error("should still report as leader")
+	}
+	if err == nil {
+		t.Error("should return error when state machine not caught up")
+	}
+}

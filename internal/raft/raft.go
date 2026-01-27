@@ -1,12 +1,14 @@
 package raft
 
 import (
-	"github.com/G1DO/raft-kv/internal/log"
+	"encoding/json"
+	"fmt"
 	"math/rand"
+	"net"
 	"sync"
 	"time"
-	"encoding/json"
-    "net"
+
+	"github.com/G1DO/raft-kv/internal/log"
 )
 
 type State int
@@ -894,6 +896,120 @@ func (r *Raft) AppendCommand(command []byte) (index int, term int, isLeader bool
 	term = r.currentTerm
 	isLeader = true
 	return
+}
+
+// ReadIndex implements linearizable reads by confirming leadership before reading.
+//
+// Problem: A stale leader (partitioned) might serve old data.
+// Solution: Before reading, confirm we're still leader by contacting majority.
+//
+// Flow:
+//   1. Record current commitIndex
+//   2. Send heartbeat to all peers
+//   3. Wait for majority to respond (confirms we're still leader)
+//   4. Wait until state machine has applied up to commitIndex
+//   5. Return success - caller can now safely read from state machine
+//
+// Returns:
+//   - readIndex: the commit index at which read is safe
+//   - isLeader: false if not leader (caller should retry with another node)
+//   - err: error if leadership confirmation failed
+func (r *Raft) ReadIndex() (readIndex int, isLeader bool, err error) {
+	r.mu.Lock()
+
+	// Step 1: Must be leader to serve reads
+	if r.state != Leader {
+		r.mu.Unlock()
+		return 0, false, nil
+	}
+
+	// Step 2: Record current commit index
+	// Reads will be served at this point in the log
+	readIndex = r.commitIndex
+	currentTerm := r.currentTerm
+	r.mu.Unlock()
+
+	// Step 3: Confirm leadership by getting heartbeat responses from majority
+	// This ensures we haven't been partitioned and replaced by a new leader
+	confirmed := r.confirmLeadership()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Check we're still leader and term hasn't changed
+	if r.state != Leader || r.currentTerm != currentTerm {
+		return 0, false, nil
+	}
+
+	if !confirmed {
+		return 0, false, fmt.Errorf("failed to confirm leadership")
+	}
+
+	// Step 4: Wait until state machine has applied up to readIndex
+	// (In practice, this is usually already true since leader applies quickly)
+	// For simplicity, we just check - caller can retry if needed
+	if r.lastApplied < readIndex {
+		return readIndex, true, fmt.Errorf("state machine not caught up (lastApplied=%d, readIndex=%d)", r.lastApplied, readIndex)
+	}
+
+	return readIndex, true, nil
+}
+
+// confirmLeadership sends heartbeats to all peers and waits for majority response
+// Returns true if majority responded (confirming we're still leader)
+func (r *Raft) confirmLeadership() bool {
+	r.mu.Lock()
+	peers := r.peers
+	r.mu.Unlock()
+
+	if len(peers) == 0 {
+		// Single node cluster - we're always leader
+		return true
+	}
+
+	// Channel to collect responses
+	responses := make(chan bool, len(peers))
+
+	// Send heartbeat to each peer
+	for _, peer := range peers {
+		go func(p string) {
+			r.mu.Lock()
+			args := AppendEntriesArgs{
+				Term:         r.currentTerm,
+				LeaderID:     r.id,
+				PrevLogIndex: 0, // heartbeat only, no entries
+				PrevLogTerm:  0,
+				Entries:      nil,
+				LeaderCommit: r.commitIndex,
+			}
+			r.mu.Unlock()
+
+			var reply AppendEntriesReply
+			ok := r.callRPC(p, "AppendEntries", &args, &reply)
+			responses <- ok && reply.Term <= args.Term
+		}(peer)
+	}
+
+	// Wait for responses with timeout
+	successCount := 1 // count ourselves
+	needed := (len(peers)+1)/2 + 1
+
+	timeout := time.After(500 * time.Millisecond)
+	for i := 0; i < len(peers); i++ {
+		select {
+		case success := <-responses:
+			if success {
+				successCount++
+			}
+			if successCount >= needed {
+				return true
+			}
+		case <-timeout:
+			return successCount >= needed
+		}
+	}
+
+	return successCount >= needed
 }
 
 // TakeSnapshot compacts the log by saving a snapshot.
