@@ -108,6 +108,7 @@ func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, s
 	// Only keep entries AFTER the snapshot (they're not in the snapshot)
 	// Note: LogEntry doesn't store index - index is implicit from position (1-based)
 	var logEntries []LogEntry
+	var configChanges []*ConfigChange // collect config changes to replay
 	for i, data := range entries {
 		entryIndex := i + 1 // Raft uses 1-based indexing
 		var entry LogEntry
@@ -115,6 +116,10 @@ func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, s
 		// Skip entries that are already in the snapshot
 		if entryIndex > savedSnapshot.LastIncludedIndex {
 			logEntries = append(logEntries, entry)
+			// Collect config changes to replay after Raft is initialized
+			if entry.ConfigChange != nil {
+				configChanges = append(configChanges, entry.ConfigChange)
+			}
 		}
 	}
 
@@ -134,6 +139,12 @@ func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, s
 		lastIncludedTerm:  savedSnapshot.LastIncludedTerm,
 		snapshotData:      savedSnapshot.Data,
 	}
+
+	// Replay config changes to restore cluster membership
+	for _, change := range configChanges {
+		r.applyConfigChange(change)
+	}
+
 	return r
 }
 
@@ -479,19 +490,34 @@ func (r *Raft) updateCommitIndex() {
 // applyCommitted sends committed entries to the application via applyCh
 // Called whenever commitIndex advances
 func (r *Raft) applyCommitted() {
-	// Skip if no channel configured
-	if r.applyCh == nil {
-		return
-	}
-
 	// Apply all entries from lastApplied+1 to commitIndex
 	for r.lastApplied < r.commitIndex {
 		r.lastApplied++
-		msg := ApplyMsg{
-			CommandIndex: r.lastApplied,
-			Command:      r.log[r.lastApplied-1].Command,
+		sliceIdx := r.lastApplied - r.lastIncludedIndex - 1
+		if sliceIdx < 0 || sliceIdx >= len(r.log) {
+			continue
 		}
-		r.applyCh <- msg
+		entry := r.log[sliceIdx]
+
+		// Config changes are applied when LOGGED, not when committed
+		// (they were already applied in AddServer/RemoveServer)
+		// But we still apply on followers when they commit
+		if entry.ConfigChange != nil {
+			// For followers, apply config change when committed
+			if r.state != Leader {
+				r.applyConfigChange(entry.ConfigChange)
+			}
+			continue // don't send config changes to state machine
+		}
+
+		// Regular command - send to state machine
+		if r.applyCh != nil {
+			msg := ApplyMsg{
+				CommandIndex: r.lastApplied,
+				Command:      entry.Command,
+			}
+			r.applyCh <- msg
+		}
 	}
 }
 
@@ -864,8 +890,27 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 }
 // LogEntry represents one entry in the Raft log
 type LogEntry struct {
-    Term    int    // term when entry was received by leader
-    Command []byte // the command (e.g., "PUT foo bar")
+	Term    int    // term when entry was received by leader
+	Command []byte // the command (e.g., "PUT foo bar")
+
+	// Config change fields (empty for normal commands)
+	ConfigChange *ConfigChange // non-nil if this is a membership change
+}
+
+// ConfigChangeType indicates whether we're adding or removing a server
+type ConfigChangeType int
+
+const (
+	AddServer    ConfigChangeType = iota // add a new server to cluster
+	RemoveServer                         // remove a server from cluster
+)
+
+// ConfigChange represents a cluster membership change
+// Only ONE server can be added/removed at a time (single-server changes)
+type ConfigChange struct {
+	Type      ConfigChangeType // add or remove
+	ServerID  string           // the server being added/removed
+	ServerAddr string          // network address (for AddServer)
 }
 // AppendCommand adds a new command to the leader's log.
 // Returns the index where stored, the term, and whether this node is the leader.
@@ -896,6 +941,167 @@ func (r *Raft) AppendCommand(command []byte) (index int, term int, isLeader bool
 	term = r.currentTerm
 	isLeader = true
 	return
+}
+
+// AddServer adds a new server to the cluster.
+// This is a single-server change - only one server can be added/removed at a time.
+//
+// Safety: Adding one server at a time ensures old and new majorities overlap,
+// preventing split-brain scenarios.
+//
+// Returns the index where the config change was logged, and whether this node is leader.
+func (r *Raft) AddServer(serverID, serverAddr string) (index int, term int, isLeader bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state != Leader {
+		return 0, 0, false
+	}
+
+	// Check if server already exists
+	for _, peer := range r.peers {
+		if peer == serverAddr {
+			return 0, 0, true // already in cluster, no-op
+		}
+	}
+
+	// Create config change entry
+	entry := LogEntry{
+		Term:    r.currentTerm,
+		Command: nil, // no application command
+		ConfigChange: &ConfigChange{
+			Type:       AddServer,
+			ServerID:   serverID,
+			ServerAddr: serverAddr,
+		},
+	}
+
+	// Append to log
+	r.log = append(r.log, entry)
+
+	// Persist to disk
+	data, _ := json.Marshal(entry)
+	r.persistentLog.Append(data)
+
+	// Apply config change IMMEDIATELY (before commit)
+	// This is a key Raft requirement - config changes take effect when logged
+	r.applyConfigChange(entry.ConfigChange)
+
+	index = len(r.log) + r.lastIncludedIndex
+	term = r.currentTerm
+	isLeader = true
+	return
+}
+
+// RemoveServer removes a server from the cluster.
+// This is a single-server change - only one server can be added/removed at a time.
+//
+// Note: If the leader removes itself, it should step down after the entry commits.
+func (r *Raft) RemoveServer(serverID, serverAddr string) (index int, term int, isLeader bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state != Leader {
+		return 0, 0, false
+	}
+
+	// Check if server exists
+	found := false
+	for _, peer := range r.peers {
+		if peer == serverAddr {
+			found = true
+			break
+		}
+	}
+	if !found && serverAddr != r.rpcAddr {
+		return 0, 0, true // not in cluster, no-op
+	}
+
+	// Create config change entry
+	entry := LogEntry{
+		Term:    r.currentTerm,
+		Command: nil,
+		ConfigChange: &ConfigChange{
+			Type:       RemoveServer,
+			ServerID:   serverID,
+			ServerAddr: serverAddr,
+		},
+	}
+
+	// Append to log
+	r.log = append(r.log, entry)
+
+	// Persist to disk
+	data, _ := json.Marshal(entry)
+	r.persistentLog.Append(data)
+
+	// Apply config change IMMEDIATELY
+	r.applyConfigChange(entry.ConfigChange)
+
+	index = len(r.log) + r.lastIncludedIndex
+	term = r.currentTerm
+	isLeader = true
+	return
+}
+
+// applyConfigChange updates the peer list based on a config change
+// Called immediately when the entry is logged (not when committed)
+func (r *Raft) applyConfigChange(change *ConfigChange) {
+	switch change.Type {
+	case AddServer:
+		// Add to peers list (if not already there)
+		for _, peer := range r.peers {
+			if peer == change.ServerAddr {
+				return // already exists
+			}
+		}
+		r.peers = append(r.peers, change.ServerAddr)
+
+		// Initialize nextIndex and matchIndex for new peer
+		if r.state == Leader {
+			if r.nextIndex == nil {
+				r.nextIndex = make(map[string]int)
+			}
+			if r.matchIndex == nil {
+				r.matchIndex = make(map[string]int)
+			}
+			r.nextIndex[change.ServerAddr] = len(r.log) + r.lastIncludedIndex + 1
+			r.matchIndex[change.ServerAddr] = 0
+		}
+
+	case RemoveServer:
+		// Remove from peers list
+		newPeers := make([]string, 0, len(r.peers))
+		for _, peer := range r.peers {
+			if peer != change.ServerAddr {
+				newPeers = append(newPeers, peer)
+			}
+		}
+		r.peers = newPeers
+
+		// Clean up leader state
+		if r.state == Leader {
+			delete(r.nextIndex, change.ServerAddr)
+			delete(r.matchIndex, change.ServerAddr)
+		}
+
+		// If we removed ourselves, step down
+		if change.ServerAddr == r.rpcAddr {
+			r.state = Follower
+			if r.heartbeatTimer != nil {
+				r.heartbeatTimer.Stop()
+			}
+		}
+	}
+}
+
+// GetPeers returns current list of peers (for testing/debugging)
+func (r *Raft) GetPeers() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]string, len(r.peers))
+	copy(result, r.peers)
+	return result
 }
 
 // ReadIndex implements linearizable reads by confirming leadership before reading.

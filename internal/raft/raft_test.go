@@ -1059,3 +1059,164 @@ func TestReadIndex_NotCaughtUp(t *testing.T) {
 		t.Error("should return error when state machine not caught up")
 	}
 }
+
+// Test: AddServer adds a new peer to the cluster
+func TestAddServer_AddsPeer(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{"peer1"}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.nextIndex = make(map[string]int)
+	r.matchIndex = make(map[string]int)
+
+	initialPeers := len(r.GetPeers())
+
+	// Add a new server
+	index, term, isLeader := r.AddServer("peer2", "localhost:8002")
+
+	if !isLeader {
+		t.Error("should be leader")
+	}
+	if index == 0 {
+		t.Error("should return valid index")
+	}
+	if term != 1 {
+		t.Errorf("expected term=1, got %d", term)
+	}
+
+	// Check peer was added
+	peers := r.GetPeers()
+	if len(peers) != initialPeers+1 {
+		t.Errorf("expected %d peers, got %d", initialPeers+1, len(peers))
+	}
+
+	// Check nextIndex was initialized for new peer
+	r.mu.Lock()
+	if _, exists := r.nextIndex["localhost:8002"]; !exists {
+		t.Error("nextIndex should be initialized for new peer")
+	}
+	r.mu.Unlock()
+}
+
+// Test: AddServer rejects non-leader
+func TestAddServer_RejectsNonLeader(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+	r.state = Follower
+
+	_, _, isLeader := r.AddServer("peer2", "localhost:8002")
+
+	if isLeader {
+		t.Error("should return isLeader=false for follower")
+	}
+}
+
+// Test: AddServer is idempotent (adding existing peer is no-op)
+func TestAddServer_Idempotent(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{"peer1"}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+
+	initialLogLen := len(r.log)
+
+	// Try to add existing peer
+	r.AddServer("peer1", "peer1")
+
+	// Log should not grow (no-op)
+	if len(r.log) != initialLogLen {
+		t.Error("adding existing peer should be no-op")
+	}
+}
+
+// Test: RemoveServer removes a peer from the cluster
+func TestRemoveServer_RemovesPeer(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{"peer1", "peer2"}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.nextIndex = map[string]int{"peer1": 1, "peer2": 1}
+	r.matchIndex = map[string]int{"peer1": 0, "peer2": 0}
+
+	// Remove peer2
+	_, _, isLeader := r.RemoveServer("peer2", "peer2")
+
+	if !isLeader {
+		t.Error("should be leader")
+	}
+
+	// Check peer was removed
+	peers := r.GetPeers()
+	for _, p := range peers {
+		if p == "peer2" {
+			t.Error("peer2 should have been removed")
+		}
+	}
+
+	// Check nextIndex was cleaned up
+	r.mu.Lock()
+	if _, exists := r.nextIndex["peer2"]; exists {
+		t.Error("nextIndex should be cleaned up for removed peer")
+	}
+	r.mu.Unlock()
+}
+
+// Test: RemoveServer - leader removes itself and steps down
+func TestRemoveServer_LeaderStepsDown(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{"peer1"}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.rpcAddr = "leader-addr"
+
+	// Leader removes itself
+	r.RemoveServer("leader", "leader-addr")
+
+	// Should step down to follower
+	r.mu.Lock()
+	state := r.state
+	r.mu.Unlock()
+
+	if state != Follower {
+		t.Error("leader should step down after removing itself")
+	}
+}
+
+// Test: Config changes are persisted and replayed on restart
+func TestConfigChange_Persistence(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "raft-config-*")
+	defer os.RemoveAll(tempDir)
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
+
+	// Create leader and add a server
+	r1 := NewRaft("leader", []string{"peer1"}, nil, logPath, statePath, snapshotPath)
+	r1.state = Leader
+	r1.currentTerm = 1
+	r1.nextIndex = make(map[string]int)
+	r1.matchIndex = make(map[string]int)
+
+	r1.AddServer("peer2", "localhost:8002")
+
+	// Verify peer was added
+	if len(r1.GetPeers()) != 2 {
+		t.Fatalf("expected 2 peers, got %d", len(r1.GetPeers()))
+	}
+
+	// Create new node with same paths - should restore config
+	r2 := NewRaft("leader", []string{"peer1"}, nil, logPath, statePath, snapshotPath)
+
+	// Config should be restored from log replay
+	peers := r2.GetPeers()
+	if len(peers) != 2 {
+		t.Errorf("expected 2 peers after restore, got %d", len(peers))
+	}
+
+	found := false
+	for _, p := range peers {
+		if p == "localhost:8002" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("added peer should be restored from log")
+	}
+}
