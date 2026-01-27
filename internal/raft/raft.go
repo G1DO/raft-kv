@@ -1,12 +1,14 @@
 package raft
 
 import (
-	"github.com/G1DO/raft-kv/internal/log"
+	"encoding/json"
+	"fmt"
 	"math/rand"
+	"net"
 	"sync"
 	"time"
-	"encoding/json"
-    "net"
+
+	"github.com/G1DO/raft-kv/internal/log"
 )
 
 type State int
@@ -21,6 +23,7 @@ const (
 type ApplyMsg struct {
 	CommandIndex int    // index of the committed command
 	Command      []byte // the command to apply
+	IsSnapshot   bool   // true if Command contains snapshot data (not a regular command)
 }
 
 type Raft struct {
@@ -60,6 +63,7 @@ type Raft struct {
 	// Persistence
     persistentLog *log.Log  // persistent storage for log entries
     statePath     string    // path to state file (term/votedFor)
+    snapshotPath  string    // path to snapshot file
 
 	// Snapshot metadata
 	// Think of it like a bank account:
@@ -74,45 +78,73 @@ type Raft struct {
 
 // NewRaft creates a new Raft node
 // applyCh is optional - if nil, committed commands won't be sent anywhere
-func NewRaft(id string, peers []string, applyCh chan ApplyMsg,logPath string,statePath string) *Raft {
+func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, statePath string, snapshotPath string) *Raft {
 	persistentLog, err := log.NewLog(logPath)
-  if err != nil {
-    panic(err)  // or handle properly later
+	if err != nil {
+		panic(err)
 	}
 
-	
 	// Load saved state (term/votedFor) if it exists
-savedState, err := LoadRaftState(statePath)
-if err != nil {
-    panic(err)  // or handle properly
-}
+	savedState, err := LoadRaftState(statePath)
+	if err != nil {
+		panic(err)
+	}
 
-// Replay log entries from disk
-entries, err := persistentLog.Replay()
-if err != nil {
-	panic(err)
-}
+	// Load snapshot if it exists
+	// This is the "fast path" - instead of replaying entire log,
+	// we restore state from snapshot and only replay entries after it
+	savedSnapshot, err := LoadSnapshot(snapshotPath)
+	if err != nil {
+		panic(err)
+	}
 
-// Convert bytes back to LogEntry
-var logEntries []LogEntry
-for _, data := range entries {
-	var entry LogEntry
-	json.Unmarshal(data, &entry)
-	logEntries = append(logEntries, entry)
-}
+	// Replay log entries from disk
+	entries, err := persistentLog.Replay()
+	if err != nil {
+		panic(err)
+	}
+
+	// Convert bytes back to LogEntry
+	// Only keep entries AFTER the snapshot (they're not in the snapshot)
+	// Note: LogEntry doesn't store index - index is implicit from position (1-based)
+	var logEntries []LogEntry
+	var configChanges []*ConfigChange // collect config changes to replay
+	for i, data := range entries {
+		entryIndex := i + 1 // Raft uses 1-based indexing
+		var entry LogEntry
+		json.Unmarshal(data, &entry)
+		// Skip entries that are already in the snapshot
+		if entryIndex > savedSnapshot.LastIncludedIndex {
+			logEntries = append(logEntries, entry)
+			// Collect config changes to replay after Raft is initialized
+			if entry.ConfigChange != nil {
+				configChanges = append(configChanges, entry.ConfigChange)
+			}
+		}
+	}
 
 	r := &Raft{
-		currentTerm:   savedState.CurrentTerm,
-		votedFor:      savedState.VotedFor,
-		state:         Follower,
-		id:            id,
-		peers:         peers,
-		votesReceived: 0,
-		applyCh:       applyCh,
-		persistentLog: persistentLog,
-		statePath:     statePath,
-		log:           logEntries,
+		currentTerm:       savedState.CurrentTerm,
+		votedFor:          savedState.VotedFor,
+		state:             Follower,
+		id:                id,
+		peers:             peers,
+		votesReceived:     0,
+		applyCh:           applyCh,
+		persistentLog:     persistentLog,
+		statePath:         statePath,
+		snapshotPath:      snapshotPath,
+		log:               logEntries,
+		lastIncludedIndex: savedSnapshot.LastIncludedIndex,
+		lastIncludedTerm:  savedSnapshot.LastIncludedTerm,
+		snapshotData:      savedSnapshot.Data,
 	}
+
+	// Replay config changes to restore cluster membership
+	for _, change := range configChanges {
+		r.applyConfigChange(change)
+	}
+
 	return r
 }
 
@@ -278,27 +310,46 @@ func (r *Raft) sendHeartbeats() {
 }
 
 // sendHeartbeat sends a heartbeat (with log entries) to one peer
+// If peer is too far behind (needs entries we compacted), sends snapshot instead
 func (r *Raft) sendHeartbeat(peer string) {
 	r.mu.Lock()
 
 	// Step 1: Get nextIndex for this peer
 	nextIdx := r.nextIndex[peer]
 
-	// Step 2: Calculate PrevLogIndex and PrevLogTerm
+	// Step 2: Check if we need to send snapshot instead
+	// If nextIndex <= lastIncludedIndex, the entries peer needs are compacted
+	if nextIdx <= r.lastIncludedIndex {
+		r.mu.Unlock()
+		r.sendInstallSnapshot(peer)
+		return
+	}
+
+	// Step 3: Calculate PrevLogIndex and PrevLogTerm
 	// PrevLogIndex = entry right before what we're sending
 	prevLogIndex := nextIdx - 1
 	prevLogTerm := 0
-	if prevLogIndex > 0 && prevLogIndex <= len(r.log) {
-		prevLogTerm = r.log[prevLogIndex-1].Term // -1 because log is 0-indexed
+
+	// Get term from snapshot or log depending on where prevLogIndex falls
+	if prevLogIndex == r.lastIncludedIndex {
+		// Entry is exactly at snapshot boundary
+		prevLogTerm = r.lastIncludedTerm
+	} else if prevLogIndex > r.lastIncludedIndex {
+		// Entry is in our log
+		sliceIdx := prevLogIndex - r.lastIncludedIndex - 1
+		if sliceIdx >= 0 && sliceIdx < len(r.log) {
+			prevLogTerm = r.log[sliceIdx].Term
+		}
 	}
 
-	// Step 3: Get entries to send (from nextIndex to end of log)
+	// Step 4: Get entries to send (from nextIndex to end of log)
 	var entries []LogEntry
-	if nextIdx <= len(r.log) {
-		entries = r.log[nextIdx-1:] // -1 because log is 0-indexed
+	sliceStart := nextIdx - r.lastIncludedIndex - 1
+	if sliceStart >= 0 && sliceStart < len(r.log) {
+		entries = r.log[sliceStart:]
 	}
 
-	// Step 4: Build the args with all fields
+	// Step 5: Build the args with all fields
 	args := AppendEntriesArgs{
 		Term:         r.currentTerm,
 		LeaderID:     r.id,
@@ -319,7 +370,7 @@ func (r *Raft) sendHeartbeat(peer string) {
 		return // peer unreachable, ignore
 	}
 
-	// Step 5: Handle success/failure
+	// Step 6: Handle success/failure
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -357,6 +408,54 @@ func (r *Raft) sendHeartbeat(peer string) {
 	}
 }
 
+// sendInstallSnapshot sends leader's snapshot to a peer that's too far behind
+func (r *Raft) sendInstallSnapshot(peer string) {
+	r.mu.Lock()
+
+	// Build InstallSnapshot args
+	args := InstallSnapshotArgs{
+		Term:              r.currentTerm,
+		LeaderID:          r.id,
+		LastIncludedIndex: r.lastIncludedIndex,
+		LastIncludedTerm:  r.lastIncludedTerm,
+		Data:              r.snapshotData,
+	}
+
+	r.mu.Unlock()
+
+	// Send the RPC
+	var reply InstallSnapshotReply
+	ok := r.callRPC(peer, "InstallSnapshot", &args, &reply)
+	if !ok {
+		return // peer unreachable
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// If reply has higher term, step down
+	if reply.Term > r.currentTerm {
+		r.currentTerm = reply.Term
+		r.state = Follower
+		r.votedFor = ""
+		r.persist()
+		if r.heartbeatTimer != nil {
+			r.heartbeatTimer.Stop()
+		}
+		return
+	}
+
+	// Only update if we're still leader
+	if r.state != Leader {
+		return
+	}
+
+	// Snapshot was accepted - update nextIndex and matchIndex
+	// Peer is now caught up to our snapshot
+	r.nextIndex[peer] = r.lastIncludedIndex + 1
+	r.matchIndex[peer] = r.lastIncludedIndex
+}
+
 // updateCommitIndex checks if any new entries can be committed
 // An entry is committed when majority of cluster has it
 // Only commits entries from current term (Raft safety rule)
@@ -391,19 +490,34 @@ func (r *Raft) updateCommitIndex() {
 // applyCommitted sends committed entries to the application via applyCh
 // Called whenever commitIndex advances
 func (r *Raft) applyCommitted() {
-	// Skip if no channel configured
-	if r.applyCh == nil {
-		return
-	}
-
 	// Apply all entries from lastApplied+1 to commitIndex
 	for r.lastApplied < r.commitIndex {
 		r.lastApplied++
-		msg := ApplyMsg{
-			CommandIndex: r.lastApplied,
-			Command:      r.log[r.lastApplied-1].Command,
+		sliceIdx := r.lastApplied - r.lastIncludedIndex - 1
+		if sliceIdx < 0 || sliceIdx >= len(r.log) {
+			continue
 		}
-		r.applyCh <- msg
+		entry := r.log[sliceIdx]
+
+		// Config changes are applied when LOGGED, not when committed
+		// (they were already applied in AddServer/RemoveServer)
+		// But we still apply on followers when they commit
+		if entry.ConfigChange != nil {
+			// For followers, apply config change when committed
+			if r.state != Leader {
+				r.applyConfigChange(entry.ConfigChange)
+			}
+			continue // don't send config changes to state machine
+		}
+
+		// Regular command - send to state machine
+		if r.applyCh != nil {
+			msg := ApplyMsg{
+				CommandIndex: r.lastApplied,
+				Command:      entry.Command,
+			}
+			r.applyCh <- msg
+		}
 	}
 }
 
@@ -489,6 +603,21 @@ type AppendEntriesReply struct {
 	Success bool // true if follower accepted
 }
 
+// InstallSnapshotArgs is sent by leader when follower is too far behind
+// Instead of sending thousands of log entries, leader sends its snapshot
+type InstallSnapshotArgs struct {
+	Term              int    // leader's term
+	LeaderID          string // so follower can redirect clients
+	LastIncludedIndex int    // snapshot replaces all entries up through this index
+	LastIncludedTerm  int    // term of lastIncludedIndex
+	Data              []byte // raw snapshot bytes (serialized state machine)
+}
+
+// InstallSnapshotReply is the response to InstallSnapshot
+type InstallSnapshotReply struct {
+	Term int // follower's current term (for leader to update itself)
+}
+
 // AppendEntries handles incoming heartbeats and log entries from leader
 func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	r.mu.Lock()
@@ -558,6 +687,87 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 }
 
+// InstallSnapshot handles incoming snapshot from leader
+// Called when follower is too far behind to catch up via log entries
+//
+// Flow:
+//   Leader: "You're at index 5000, but I compacted up to 900000. Here's my snapshot."
+//   Follower: Replaces entire state with snapshot, discards old log
+func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	reply.Term = r.currentTerm
+
+	// Rule 1: Reject if leader's term is stale
+	if args.Term < r.currentTerm {
+		return
+	}
+
+	// Rule 2: Update term if leader has higher term
+	if args.Term > r.currentTerm {
+		r.currentTerm = args.Term
+		r.votedFor = ""
+		r.persist()
+	}
+
+	// Accept leader, become follower
+	r.state = Follower
+	r.resetElectionTimer()
+
+	// Rule 3: Ignore if we already have a newer snapshot
+	if args.LastIncludedIndex <= r.lastIncludedIndex {
+		return
+	}
+
+	// Save snapshot to disk FIRST (crash safety)
+	snapshot := SnapshotState{
+		LastIncludedIndex: args.LastIncludedIndex,
+		LastIncludedTerm:  args.LastIncludedTerm,
+		Data:              args.Data,
+	}
+	SaveSnapshot(r.snapshotPath, snapshot)
+
+	// Discard log entries covered by snapshot
+	// Case 1: Snapshot covers all our log entries
+	// Case 2: Snapshot covers only some entries (keep entries after snapshot)
+	lastLogIndex := r.lastIncludedIndex + len(r.log)
+	if args.LastIncludedIndex >= lastLogIndex {
+		// Snapshot is newer than our entire log - discard everything
+		r.log = []LogEntry{}
+	} else {
+		// Keep entries after the snapshot
+		sliceIndex := args.LastIncludedIndex - r.lastIncludedIndex
+		if sliceIndex > 0 && sliceIndex < len(r.log) {
+			r.log = r.log[sliceIndex:]
+		}
+	}
+
+	// Update snapshot metadata
+	r.lastIncludedIndex = args.LastIncludedIndex
+	r.lastIncludedTerm = args.LastIncludedTerm
+	r.snapshotData = args.Data
+
+	// Reset commitIndex and lastApplied to snapshot point
+	// (state machine will be restored from snapshot)
+	if r.commitIndex < args.LastIncludedIndex {
+		r.commitIndex = args.LastIncludedIndex
+	}
+	if r.lastApplied < args.LastIncludedIndex {
+		r.lastApplied = args.LastIncludedIndex
+	}
+
+	// Signal application to load snapshot into state machine
+	// The applyCh will receive a special message with the snapshot
+	if r.applyCh != nil {
+		r.applyCh <- ApplyMsg{
+			CommandIndex: args.LastIncludedIndex,
+			Command:      args.Data, // snapshot data for state machine to restore
+			IsSnapshot:   true,
+		}
+	}
+}
+
 // RPCMessage wraps all RPC requests
 type RPCMessage struct {
     Type string
@@ -621,6 +831,13 @@ func (r *Raft) handleRPC(conn net.Conn) {
 		var reply AppendEntriesReply
 		r.AppendEntries(&args, &reply)
 		response.Data, _ = json.Marshal(reply)
+
+	case "InstallSnapshot":
+		var args InstallSnapshotArgs
+		json.Unmarshal(msg.Data, &args)
+		var reply InstallSnapshotReply
+		r.InstallSnapshot(&args, &reply)
+		response.Data, _ = json.Marshal(reply)
 	}
 
 	// Send response back
@@ -673,8 +890,27 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 }
 // LogEntry represents one entry in the Raft log
 type LogEntry struct {
-    Term    int    // term when entry was received by leader
-    Command []byte // the command (e.g., "PUT foo bar")
+	Term    int    // term when entry was received by leader
+	Command []byte // the command (e.g., "PUT foo bar")
+
+	// Config change fields (empty for normal commands)
+	ConfigChange *ConfigChange // non-nil if this is a membership change
+}
+
+// ConfigChangeType indicates whether we're adding or removing a server
+type ConfigChangeType int
+
+const (
+	AddServer    ConfigChangeType = iota // add a new server to cluster
+	RemoveServer                         // remove a server from cluster
+)
+
+// ConfigChange represents a cluster membership change
+// Only ONE server can be added/removed at a time (single-server changes)
+type ConfigChange struct {
+	Type      ConfigChangeType // add or remove
+	ServerID  string           // the server being added/removed
+	ServerAddr string          // network address (for AddServer)
 }
 // AppendCommand adds a new command to the leader's log.
 // Returns the index where stored, the term, and whether this node is the leader.
@@ -705,6 +941,281 @@ func (r *Raft) AppendCommand(command []byte) (index int, term int, isLeader bool
 	term = r.currentTerm
 	isLeader = true
 	return
+}
+
+// AddServer adds a new server to the cluster.
+// This is a single-server change - only one server can be added/removed at a time.
+//
+// Safety: Adding one server at a time ensures old and new majorities overlap,
+// preventing split-brain scenarios.
+//
+// Returns the index where the config change was logged, and whether this node is leader.
+func (r *Raft) AddServer(serverID, serverAddr string) (index int, term int, isLeader bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state != Leader {
+		return 0, 0, false
+	}
+
+	// Check if server already exists
+	for _, peer := range r.peers {
+		if peer == serverAddr {
+			return 0, 0, true // already in cluster, no-op
+		}
+	}
+
+	// Create config change entry
+	entry := LogEntry{
+		Term:    r.currentTerm,
+		Command: nil, // no application command
+		ConfigChange: &ConfigChange{
+			Type:       AddServer,
+			ServerID:   serverID,
+			ServerAddr: serverAddr,
+		},
+	}
+
+	// Append to log
+	r.log = append(r.log, entry)
+
+	// Persist to disk
+	data, _ := json.Marshal(entry)
+	r.persistentLog.Append(data)
+
+	// Apply config change IMMEDIATELY (before commit)
+	// This is a key Raft requirement - config changes take effect when logged
+	r.applyConfigChange(entry.ConfigChange)
+
+	index = len(r.log) + r.lastIncludedIndex
+	term = r.currentTerm
+	isLeader = true
+	return
+}
+
+// RemoveServer removes a server from the cluster.
+// This is a single-server change - only one server can be added/removed at a time.
+//
+// Note: If the leader removes itself, it should step down after the entry commits.
+func (r *Raft) RemoveServer(serverID, serverAddr string) (index int, term int, isLeader bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state != Leader {
+		return 0, 0, false
+	}
+
+	// Check if server exists
+	found := false
+	for _, peer := range r.peers {
+		if peer == serverAddr {
+			found = true
+			break
+		}
+	}
+	if !found && serverAddr != r.rpcAddr {
+		return 0, 0, true // not in cluster, no-op
+	}
+
+	// Create config change entry
+	entry := LogEntry{
+		Term:    r.currentTerm,
+		Command: nil,
+		ConfigChange: &ConfigChange{
+			Type:       RemoveServer,
+			ServerID:   serverID,
+			ServerAddr: serverAddr,
+		},
+	}
+
+	// Append to log
+	r.log = append(r.log, entry)
+
+	// Persist to disk
+	data, _ := json.Marshal(entry)
+	r.persistentLog.Append(data)
+
+	// Apply config change IMMEDIATELY
+	r.applyConfigChange(entry.ConfigChange)
+
+	index = len(r.log) + r.lastIncludedIndex
+	term = r.currentTerm
+	isLeader = true
+	return
+}
+
+// applyConfigChange updates the peer list based on a config change
+// Called immediately when the entry is logged (not when committed)
+func (r *Raft) applyConfigChange(change *ConfigChange) {
+	switch change.Type {
+	case AddServer:
+		// Add to peers list (if not already there)
+		for _, peer := range r.peers {
+			if peer == change.ServerAddr {
+				return // already exists
+			}
+		}
+		r.peers = append(r.peers, change.ServerAddr)
+
+		// Initialize nextIndex and matchIndex for new peer
+		if r.state == Leader {
+			if r.nextIndex == nil {
+				r.nextIndex = make(map[string]int)
+			}
+			if r.matchIndex == nil {
+				r.matchIndex = make(map[string]int)
+			}
+			r.nextIndex[change.ServerAddr] = len(r.log) + r.lastIncludedIndex + 1
+			r.matchIndex[change.ServerAddr] = 0
+		}
+
+	case RemoveServer:
+		// Remove from peers list
+		newPeers := make([]string, 0, len(r.peers))
+		for _, peer := range r.peers {
+			if peer != change.ServerAddr {
+				newPeers = append(newPeers, peer)
+			}
+		}
+		r.peers = newPeers
+
+		// Clean up leader state
+		if r.state == Leader {
+			delete(r.nextIndex, change.ServerAddr)
+			delete(r.matchIndex, change.ServerAddr)
+		}
+
+		// If we removed ourselves, step down
+		if change.ServerAddr == r.rpcAddr {
+			r.state = Follower
+			if r.heartbeatTimer != nil {
+				r.heartbeatTimer.Stop()
+			}
+		}
+	}
+}
+
+// GetPeers returns current list of peers (for testing/debugging)
+func (r *Raft) GetPeers() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]string, len(r.peers))
+	copy(result, r.peers)
+	return result
+}
+
+// ReadIndex implements linearizable reads by confirming leadership before reading.
+//
+// Problem: A stale leader (partitioned) might serve old data.
+// Solution: Before reading, confirm we're still leader by contacting majority.
+//
+// Flow:
+//   1. Record current commitIndex
+//   2. Send heartbeat to all peers
+//   3. Wait for majority to respond (confirms we're still leader)
+//   4. Wait until state machine has applied up to commitIndex
+//   5. Return success - caller can now safely read from state machine
+//
+// Returns:
+//   - readIndex: the commit index at which read is safe
+//   - isLeader: false if not leader (caller should retry with another node)
+//   - err: error if leadership confirmation failed
+func (r *Raft) ReadIndex() (readIndex int, isLeader bool, err error) {
+	r.mu.Lock()
+
+	// Step 1: Must be leader to serve reads
+	if r.state != Leader {
+		r.mu.Unlock()
+		return 0, false, nil
+	}
+
+	// Step 2: Record current commit index
+	// Reads will be served at this point in the log
+	readIndex = r.commitIndex
+	currentTerm := r.currentTerm
+	r.mu.Unlock()
+
+	// Step 3: Confirm leadership by getting heartbeat responses from majority
+	// This ensures we haven't been partitioned and replaced by a new leader
+	confirmed := r.confirmLeadership()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Check we're still leader and term hasn't changed
+	if r.state != Leader || r.currentTerm != currentTerm {
+		return 0, false, nil
+	}
+
+	if !confirmed {
+		return 0, false, fmt.Errorf("failed to confirm leadership")
+	}
+
+	// Step 4: Wait until state machine has applied up to readIndex
+	// (In practice, this is usually already true since leader applies quickly)
+	// For simplicity, we just check - caller can retry if needed
+	if r.lastApplied < readIndex {
+		return readIndex, true, fmt.Errorf("state machine not caught up (lastApplied=%d, readIndex=%d)", r.lastApplied, readIndex)
+	}
+
+	return readIndex, true, nil
+}
+
+// confirmLeadership sends heartbeats to all peers and waits for majority response
+// Returns true if majority responded (confirming we're still leader)
+func (r *Raft) confirmLeadership() bool {
+	r.mu.Lock()
+	peers := r.peers
+	r.mu.Unlock()
+
+	if len(peers) == 0 {
+		// Single node cluster - we're always leader
+		return true
+	}
+
+	// Channel to collect responses
+	responses := make(chan bool, len(peers))
+
+	// Send heartbeat to each peer
+	for _, peer := range peers {
+		go func(p string) {
+			r.mu.Lock()
+			args := AppendEntriesArgs{
+				Term:         r.currentTerm,
+				LeaderID:     r.id,
+				PrevLogIndex: 0, // heartbeat only, no entries
+				PrevLogTerm:  0,
+				Entries:      nil,
+				LeaderCommit: r.commitIndex,
+			}
+			r.mu.Unlock()
+
+			var reply AppendEntriesReply
+			ok := r.callRPC(p, "AppendEntries", &args, &reply)
+			responses <- ok && reply.Term <= args.Term
+		}(peer)
+	}
+
+	// Wait for responses with timeout
+	successCount := 1 // count ourselves
+	needed := (len(peers)+1)/2 + 1
+
+	timeout := time.After(500 * time.Millisecond)
+	for i := 0; i < len(peers); i++ {
+		select {
+		case success := <-responses:
+			if success {
+				successCount++
+			}
+			if successCount >= needed {
+				return true
+			}
+		case <-timeout:
+			return successCount >= needed
+		}
+	}
+
+	return successCount >= needed
 }
 
 // TakeSnapshot compacts the log by saving a snapshot.
@@ -742,7 +1253,13 @@ func (r *Raft) TakeSnapshot(snapshotIndex int, data []byte) {
 	r.lastIncludedTerm = snapshotTerm
 	r.snapshotData = data
 
-	// TODO: persist snapshot to disk (for crash recovery)
+	// Persist snapshot to disk (for crash recovery)
+	snapshot := SnapshotState{
+		LastIncludedIndex: snapshotIndex,
+		LastIncludedTerm:  snapshotTerm,
+		Data:              data,
+	}
+	SaveSnapshot(r.snapshotPath, snapshot)
 }
 
 // getLogIndex converts slice index to absolute Raft index

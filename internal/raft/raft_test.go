@@ -17,8 +17,9 @@ func newTestRaft(t *testing.T, id string, peers []string, applyCh chan ApplyMsg)
 
 	logPath := fmt.Sprintf("%s/%s.log", tempDir, id)
 	statePath := fmt.Sprintf("%s/%s.state", tempDir, id)
+	snapshotPath := fmt.Sprintf("%s/%s.snapshot", tempDir, id)
 
-	r := NewRaft(id, peers, applyCh, logPath, statePath)
+	r := NewRaft(id, peers, applyCh, logPath, statePath, snapshotPath)
 
 	// Register cleanup
 	t.Cleanup(func() {
@@ -690,13 +691,14 @@ func TestPersistence_TermIsSaved(t *testing.T) {
 
 	logPath := tempDir + "/node.log"
 	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node, start election (increments term)
-	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
 	r1.startElection() // term becomes 1
 
 	// Create new node with same paths - should restore state
-	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
 
 	if r2.currentTerm != 1 {
 		t.Errorf("expected restored term=1, got %d", r2.currentTerm)
@@ -710,13 +712,14 @@ func TestPersistence_VotedForIsSaved(t *testing.T) {
 
 	logPath := tempDir + "/node.log"
 	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node, start election (votes for self)
-	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
 	r1.startElection() // votes for node1
 
 	// Create new node with same paths - should restore state
-	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
 
 	if r2.votedFor != "node1" {
 		t.Errorf("expected restored votedFor=node1, got %s", r2.votedFor)
@@ -730,16 +733,17 @@ func TestPersistence_LogEntriesAreSaved(t *testing.T) {
 
 	logPath := tempDir + "/node.log"
 	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create leader and append entries
-	r1 := NewRaft("leader", []string{}, nil, logPath, statePath)
+	r1 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
 	r1.state = Leader
 	r1.currentTerm = 1
 	r1.AppendCommand([]byte("PUT foo bar"))
 	r1.AppendCommand([]byte("PUT baz qux"))
 
 	// Create new node with same paths - should restore log
-	r2 := NewRaft("leader", []string{}, nil, logPath, statePath)
+	r2 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
 
 	if len(r2.log) != 2 {
 		t.Errorf("expected 2 log entries, got %d", len(r2.log))
@@ -759,9 +763,10 @@ func TestPersistence_FreshStart(t *testing.T) {
 
 	logPath := tempDir + "/node.log"
 	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node - no existing files
-	r := NewRaft("node1", []string{}, nil, logPath, statePath)
+	r := NewRaft("node1", []string{}, nil, logPath, statePath, snapshotPath)
 
 	if r.currentTerm != 0 {
 		t.Errorf("expected term=0 on fresh start, got %d", r.currentTerm)
@@ -849,5 +854,369 @@ func TestTakeSnapshot_IndexConversion(t *testing.T) {
 
 	if r.lastIncludedIndex != 8 {
 		t.Errorf("expected lastIncludedIndex=8, got %d", r.lastIncludedIndex)
+	}
+}
+
+// Test: Snapshot is persisted and restored on restart
+func TestPersistence_SnapshotIsRestored(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "raft-snapshot-*")
+	defer os.RemoveAll(tempDir)
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
+
+	// Create node and add some entries
+	r1 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
+	r1.state = Leader
+	r1.currentTerm = 1
+
+	// Add 5 log entries (indices 1-5)
+	for i := 0; i < 5; i++ {
+		r1.AppendCommand([]byte(fmt.Sprintf("cmd%d", i)))
+	}
+
+	// Take snapshot at index 3 (covers entries 1-3)
+	r1.TakeSnapshot(3, []byte("snapshot-at-3"))
+
+	// Add 2 more entries after snapshot (indices 4-5 become 4-5)
+	// Actually they're already there from before, just entries 4-5 remain
+
+	// Verify r1 state
+	if r1.lastIncludedIndex != 3 {
+		t.Fatalf("expected lastIncludedIndex=3, got %d", r1.lastIncludedIndex)
+	}
+	if len(r1.log) != 2 {
+		t.Fatalf("expected 2 log entries after snapshot, got %d", len(r1.log))
+	}
+
+	// Create new node with same paths - should restore snapshot
+	r2 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
+
+	// Verify snapshot was restored
+	if r2.lastIncludedIndex != 3 {
+		t.Errorf("expected restored lastIncludedIndex=3, got %d", r2.lastIncludedIndex)
+	}
+	if r2.lastIncludedTerm != 1 {
+		t.Errorf("expected restored lastIncludedTerm=1, got %d", r2.lastIncludedTerm)
+	}
+	if string(r2.snapshotData) != "snapshot-at-3" {
+		t.Errorf("expected restored snapshotData='snapshot-at-3', got '%s'", r2.snapshotData)
+	}
+
+	// Verify only entries AFTER snapshot are in log (entries 4 and 5)
+	if len(r2.log) != 2 {
+		t.Errorf("expected 2 log entries after restore, got %d", len(r2.log))
+	}
+}
+
+// Test: InstallSnapshot handler correctly updates follower state
+func TestInstallSnapshot_UpdatesFollowerState(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+
+	// Follower starts with some log entries
+	r.log = []LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+		{Term: 1, Command: []byte("cmd2")},
+		{Term: 1, Command: []byte("cmd3")},
+	}
+	r.currentTerm = 1
+
+	// Leader sends snapshot that covers more than follower has
+	args := &InstallSnapshotArgs{
+		Term:              2,
+		LeaderID:          "leader",
+		LastIncludedIndex: 10,
+		LastIncludedTerm:  2,
+		Data:              []byte("snapshot-data"),
+	}
+	reply := &InstallSnapshotReply{}
+
+	r.InstallSnapshot(args, reply)
+
+	// Verify follower updated its state
+	if r.lastIncludedIndex != 10 {
+		t.Errorf("expected lastIncludedIndex=10, got %d", r.lastIncludedIndex)
+	}
+	if r.lastIncludedTerm != 2 {
+		t.Errorf("expected lastIncludedTerm=2, got %d", r.lastIncludedTerm)
+	}
+	if string(r.snapshotData) != "snapshot-data" {
+		t.Errorf("expected snapshotData='snapshot-data', got '%s'", r.snapshotData)
+	}
+	// Log should be empty (snapshot covers everything follower had)
+	if len(r.log) != 0 {
+		t.Errorf("expected empty log after snapshot, got %d entries", len(r.log))
+	}
+	// Term should be updated
+	if r.currentTerm != 2 {
+		t.Errorf("expected term=2, got %d", r.currentTerm)
+	}
+}
+
+// Test: InstallSnapshot rejects stale leader
+func TestInstallSnapshot_RejectsStaleLeader(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+	r.currentTerm = 5
+
+	// Stale leader (term 3) sends snapshot
+	args := &InstallSnapshotArgs{
+		Term:              3, // less than follower's term
+		LeaderID:          "leader",
+		LastIncludedIndex: 10,
+		LastIncludedTerm:  3,
+		Data:              []byte("snapshot-data"),
+	}
+	reply := &InstallSnapshotReply{}
+
+	r.InstallSnapshot(args, reply)
+
+	// Follower should reject - state unchanged
+	if r.lastIncludedIndex != 0 {
+		t.Errorf("expected lastIncludedIndex=0 (unchanged), got %d", r.lastIncludedIndex)
+	}
+	if reply.Term != 5 {
+		t.Errorf("expected reply.Term=5, got %d", reply.Term)
+	}
+}
+
+// Test: InstallSnapshot ignores older snapshot
+func TestInstallSnapshot_IgnoresOlderSnapshot(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+	r.currentTerm = 2
+	r.lastIncludedIndex = 20 // already have snapshot at index 20
+	r.lastIncludedTerm = 2
+	r.snapshotData = []byte("existing-snapshot")
+
+	// Leader sends older snapshot (index 10 < 20)
+	args := &InstallSnapshotArgs{
+		Term:              2,
+		LeaderID:          "leader",
+		LastIncludedIndex: 10, // older than what we have
+		LastIncludedTerm:  1,
+		Data:              []byte("old-snapshot"),
+	}
+	reply := &InstallSnapshotReply{}
+
+	r.InstallSnapshot(args, reply)
+
+	// Should keep existing snapshot
+	if r.lastIncludedIndex != 20 {
+		t.Errorf("expected lastIncludedIndex=20, got %d", r.lastIncludedIndex)
+	}
+	if string(r.snapshotData) != "existing-snapshot" {
+		t.Errorf("snapshot data should be unchanged")
+	}
+}
+
+// Test: ReadIndex returns false for non-leader
+func TestReadIndex_RejectsNonLeader(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+	r.state = Follower
+
+	_, isLeader, _ := r.ReadIndex()
+
+	if isLeader {
+		t.Error("ReadIndex should return isLeader=false for follower")
+	}
+}
+
+// Test: ReadIndex succeeds for single-node leader
+func TestReadIndex_SingleNodeLeader(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.commitIndex = 5
+	r.lastApplied = 5
+
+	readIndex, isLeader, err := r.ReadIndex()
+
+	if !isLeader {
+		t.Error("ReadIndex should return isLeader=true for leader")
+	}
+	if err != nil {
+		t.Errorf("ReadIndex should succeed for single-node leader, got error: %v", err)
+	}
+	if readIndex != 5 {
+		t.Errorf("expected readIndex=5, got %d", readIndex)
+	}
+}
+
+// Test: ReadIndex fails if state machine not caught up
+func TestReadIndex_NotCaughtUp(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.commitIndex = 10
+	r.lastApplied = 5 // behind commitIndex
+
+	_, isLeader, err := r.ReadIndex()
+
+	if !isLeader {
+		t.Error("should still report as leader")
+	}
+	if err == nil {
+		t.Error("should return error when state machine not caught up")
+	}
+}
+
+// Test: AddServer adds a new peer to the cluster
+func TestAddServer_AddsPeer(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{"peer1"}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.nextIndex = make(map[string]int)
+	r.matchIndex = make(map[string]int)
+
+	initialPeers := len(r.GetPeers())
+
+	// Add a new server
+	index, term, isLeader := r.AddServer("peer2", "localhost:8002")
+
+	if !isLeader {
+		t.Error("should be leader")
+	}
+	if index == 0 {
+		t.Error("should return valid index")
+	}
+	if term != 1 {
+		t.Errorf("expected term=1, got %d", term)
+	}
+
+	// Check peer was added
+	peers := r.GetPeers()
+	if len(peers) != initialPeers+1 {
+		t.Errorf("expected %d peers, got %d", initialPeers+1, len(peers))
+	}
+
+	// Check nextIndex was initialized for new peer
+	r.mu.Lock()
+	if _, exists := r.nextIndex["localhost:8002"]; !exists {
+		t.Error("nextIndex should be initialized for new peer")
+	}
+	r.mu.Unlock()
+}
+
+// Test: AddServer rejects non-leader
+func TestAddServer_RejectsNonLeader(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+	r.state = Follower
+
+	_, _, isLeader := r.AddServer("peer2", "localhost:8002")
+
+	if isLeader {
+		t.Error("should return isLeader=false for follower")
+	}
+}
+
+// Test: AddServer is idempotent (adding existing peer is no-op)
+func TestAddServer_Idempotent(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{"peer1"}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+
+	initialLogLen := len(r.log)
+
+	// Try to add existing peer
+	r.AddServer("peer1", "peer1")
+
+	// Log should not grow (no-op)
+	if len(r.log) != initialLogLen {
+		t.Error("adding existing peer should be no-op")
+	}
+}
+
+// Test: RemoveServer removes a peer from the cluster
+func TestRemoveServer_RemovesPeer(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{"peer1", "peer2"}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.nextIndex = map[string]int{"peer1": 1, "peer2": 1}
+	r.matchIndex = map[string]int{"peer1": 0, "peer2": 0}
+
+	// Remove peer2
+	_, _, isLeader := r.RemoveServer("peer2", "peer2")
+
+	if !isLeader {
+		t.Error("should be leader")
+	}
+
+	// Check peer was removed
+	peers := r.GetPeers()
+	for _, p := range peers {
+		if p == "peer2" {
+			t.Error("peer2 should have been removed")
+		}
+	}
+
+	// Check nextIndex was cleaned up
+	r.mu.Lock()
+	if _, exists := r.nextIndex["peer2"]; exists {
+		t.Error("nextIndex should be cleaned up for removed peer")
+	}
+	r.mu.Unlock()
+}
+
+// Test: RemoveServer - leader removes itself and steps down
+func TestRemoveServer_LeaderStepsDown(t *testing.T) {
+	r := newTestRaft(t, "leader", []string{"peer1"}, nil)
+	r.state = Leader
+	r.currentTerm = 1
+	r.rpcAddr = "leader-addr"
+
+	// Leader removes itself
+	r.RemoveServer("leader", "leader-addr")
+
+	// Should step down to follower
+	r.mu.Lock()
+	state := r.state
+	r.mu.Unlock()
+
+	if state != Follower {
+		t.Error("leader should step down after removing itself")
+	}
+}
+
+// Test: Config changes are persisted and replayed on restart
+func TestConfigChange_Persistence(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "raft-config-*")
+	defer os.RemoveAll(tempDir)
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
+
+	// Create leader and add a server
+	r1 := NewRaft("leader", []string{"peer1"}, nil, logPath, statePath, snapshotPath)
+	r1.state = Leader
+	r1.currentTerm = 1
+	r1.nextIndex = make(map[string]int)
+	r1.matchIndex = make(map[string]int)
+
+	r1.AddServer("peer2", "localhost:8002")
+
+	// Verify peer was added
+	if len(r1.GetPeers()) != 2 {
+		t.Fatalf("expected 2 peers, got %d", len(r1.GetPeers()))
+	}
+
+	// Create new node with same paths - should restore config
+	r2 := NewRaft("leader", []string{"peer1"}, nil, logPath, statePath, snapshotPath)
+
+	// Config should be restored from log replay
+	peers := r2.GetPeers()
+	if len(peers) != 2 {
+		t.Errorf("expected 2 peers after restore, got %d", len(peers))
+	}
+
+	found := false
+	for _, p := range peers {
+		if p == "localhost:8002" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("added peer should be restored from log")
 	}
 }
