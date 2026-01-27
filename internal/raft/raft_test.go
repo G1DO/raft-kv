@@ -17,8 +17,9 @@ func newTestRaft(t *testing.T, id string, peers []string, applyCh chan ApplyMsg)
 
 	logPath := fmt.Sprintf("%s/%s.log", tempDir, id)
 	statePath := fmt.Sprintf("%s/%s.state", tempDir, id)
+	snapshotPath := fmt.Sprintf("%s/%s.snapshot", tempDir, id)
 
-	r := NewRaft(id, peers, applyCh, logPath, statePath)
+	r := NewRaft(id, peers, applyCh, logPath, statePath, snapshotPath)
 
 	// Register cleanup
 	t.Cleanup(func() {
@@ -690,13 +691,14 @@ func TestPersistence_TermIsSaved(t *testing.T) {
 
 	logPath := tempDir + "/node.log"
 	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node, start election (increments term)
-	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
 	r1.startElection() // term becomes 1
 
 	// Create new node with same paths - should restore state
-	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
 
 	if r2.currentTerm != 1 {
 		t.Errorf("expected restored term=1, got %d", r2.currentTerm)
@@ -710,13 +712,14 @@ func TestPersistence_VotedForIsSaved(t *testing.T) {
 
 	logPath := tempDir + "/node.log"
 	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node, start election (votes for self)
-	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
 	r1.startElection() // votes for node1
 
 	// Create new node with same paths - should restore state
-	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath)
+	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
 
 	if r2.votedFor != "node1" {
 		t.Errorf("expected restored votedFor=node1, got %s", r2.votedFor)
@@ -730,16 +733,17 @@ func TestPersistence_LogEntriesAreSaved(t *testing.T) {
 
 	logPath := tempDir + "/node.log"
 	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create leader and append entries
-	r1 := NewRaft("leader", []string{}, nil, logPath, statePath)
+	r1 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
 	r1.state = Leader
 	r1.currentTerm = 1
 	r1.AppendCommand([]byte("PUT foo bar"))
 	r1.AppendCommand([]byte("PUT baz qux"))
 
 	// Create new node with same paths - should restore log
-	r2 := NewRaft("leader", []string{}, nil, logPath, statePath)
+	r2 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
 
 	if len(r2.log) != 2 {
 		t.Errorf("expected 2 log entries, got %d", len(r2.log))
@@ -759,9 +763,10 @@ func TestPersistence_FreshStart(t *testing.T) {
 
 	logPath := tempDir + "/node.log"
 	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node - no existing files
-	r := NewRaft("node1", []string{}, nil, logPath, statePath)
+	r := NewRaft("node1", []string{}, nil, logPath, statePath, snapshotPath)
 
 	if r.currentTerm != 0 {
 		t.Errorf("expected term=0 on fresh start, got %d", r.currentTerm)
@@ -849,5 +854,58 @@ func TestTakeSnapshot_IndexConversion(t *testing.T) {
 
 	if r.lastIncludedIndex != 8 {
 		t.Errorf("expected lastIncludedIndex=8, got %d", r.lastIncludedIndex)
+	}
+}
+
+// Test: Snapshot is persisted and restored on restart
+func TestPersistence_SnapshotIsRestored(t *testing.T) {
+	tempDir, _ := os.MkdirTemp("", "raft-snapshot-*")
+	defer os.RemoveAll(tempDir)
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
+
+	// Create node and add some entries
+	r1 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
+	r1.state = Leader
+	r1.currentTerm = 1
+
+	// Add 5 log entries (indices 1-5)
+	for i := 0; i < 5; i++ {
+		r1.AppendCommand([]byte(fmt.Sprintf("cmd%d", i)))
+	}
+
+	// Take snapshot at index 3 (covers entries 1-3)
+	r1.TakeSnapshot(3, []byte("snapshot-at-3"))
+
+	// Add 2 more entries after snapshot (indices 4-5 become 4-5)
+	// Actually they're already there from before, just entries 4-5 remain
+
+	// Verify r1 state
+	if r1.lastIncludedIndex != 3 {
+		t.Fatalf("expected lastIncludedIndex=3, got %d", r1.lastIncludedIndex)
+	}
+	if len(r1.log) != 2 {
+		t.Fatalf("expected 2 log entries after snapshot, got %d", len(r1.log))
+	}
+
+	// Create new node with same paths - should restore snapshot
+	r2 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
+
+	// Verify snapshot was restored
+	if r2.lastIncludedIndex != 3 {
+		t.Errorf("expected restored lastIncludedIndex=3, got %d", r2.lastIncludedIndex)
+	}
+	if r2.lastIncludedTerm != 1 {
+		t.Errorf("expected restored lastIncludedTerm=1, got %d", r2.lastIncludedTerm)
+	}
+	if string(r2.snapshotData) != "snapshot-at-3" {
+		t.Errorf("expected restored snapshotData='snapshot-at-3', got '%s'", r2.snapshotData)
+	}
+
+	// Verify only entries AFTER snapshot are in log (entries 4 and 5)
+	if len(r2.log) != 2 {
+		t.Errorf("expected 2 log entries after restore, got %d", len(r2.log))
 	}
 }

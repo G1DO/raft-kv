@@ -60,6 +60,7 @@ type Raft struct {
 	// Persistence
     persistentLog *log.Log  // persistent storage for log entries
     statePath     string    // path to state file (term/votedFor)
+    snapshotPath  string    // path to snapshot file
 
 	// Snapshot metadata
 	// Think of it like a bank account:
@@ -74,44 +75,61 @@ type Raft struct {
 
 // NewRaft creates a new Raft node
 // applyCh is optional - if nil, committed commands won't be sent anywhere
-func NewRaft(id string, peers []string, applyCh chan ApplyMsg,logPath string,statePath string) *Raft {
+func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, statePath string, snapshotPath string) *Raft {
 	persistentLog, err := log.NewLog(logPath)
-  if err != nil {
-    panic(err)  // or handle properly later
+	if err != nil {
+		panic(err)
 	}
 
-	
 	// Load saved state (term/votedFor) if it exists
-savedState, err := LoadRaftState(statePath)
-if err != nil {
-    panic(err)  // or handle properly
-}
+	savedState, err := LoadRaftState(statePath)
+	if err != nil {
+		panic(err)
+	}
 
-// Replay log entries from disk
-entries, err := persistentLog.Replay()
-if err != nil {
-	panic(err)
-}
+	// Load snapshot if it exists
+	// This is the "fast path" - instead of replaying entire log,
+	// we restore state from snapshot and only replay entries after it
+	savedSnapshot, err := LoadSnapshot(snapshotPath)
+	if err != nil {
+		panic(err)
+	}
 
-// Convert bytes back to LogEntry
-var logEntries []LogEntry
-for _, data := range entries {
-	var entry LogEntry
-	json.Unmarshal(data, &entry)
-	logEntries = append(logEntries, entry)
-}
+	// Replay log entries from disk
+	entries, err := persistentLog.Replay()
+	if err != nil {
+		panic(err)
+	}
+
+	// Convert bytes back to LogEntry
+	// Only keep entries AFTER the snapshot (they're not in the snapshot)
+	// Note: LogEntry doesn't store index - index is implicit from position (1-based)
+	var logEntries []LogEntry
+	for i, data := range entries {
+		entryIndex := i + 1 // Raft uses 1-based indexing
+		var entry LogEntry
+		json.Unmarshal(data, &entry)
+		// Skip entries that are already in the snapshot
+		if entryIndex > savedSnapshot.LastIncludedIndex {
+			logEntries = append(logEntries, entry)
+		}
+	}
 
 	r := &Raft{
-		currentTerm:   savedState.CurrentTerm,
-		votedFor:      savedState.VotedFor,
-		state:         Follower,
-		id:            id,
-		peers:         peers,
-		votesReceived: 0,
-		applyCh:       applyCh,
-		persistentLog: persistentLog,
-		statePath:     statePath,
-		log:           logEntries,
+		currentTerm:       savedState.CurrentTerm,
+		votedFor:          savedState.VotedFor,
+		state:             Follower,
+		id:                id,
+		peers:             peers,
+		votesReceived:     0,
+		applyCh:           applyCh,
+		persistentLog:     persistentLog,
+		statePath:         statePath,
+		snapshotPath:      snapshotPath,
+		log:               logEntries,
+		lastIncludedIndex: savedSnapshot.LastIncludedIndex,
+		lastIncludedTerm:  savedSnapshot.LastIncludedTerm,
+		snapshotData:      savedSnapshot.Data,
 	}
 	return r
 }
@@ -742,7 +760,13 @@ func (r *Raft) TakeSnapshot(snapshotIndex int, data []byte) {
 	r.lastIncludedTerm = snapshotTerm
 	r.snapshotData = data
 
-	// TODO: persist snapshot to disk (for crash recovery)
+	// Persist snapshot to disk (for crash recovery)
+	snapshot := SnapshotState{
+		LastIncludedIndex: snapshotIndex,
+		LastIncludedTerm:  snapshotTerm,
+		Data:              data,
+	}
+	SaveSnapshot(r.snapshotPath, snapshot)
 }
 
 // getLogIndex converts slice index to absolute Raft index
