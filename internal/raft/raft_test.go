@@ -909,3 +909,102 @@ func TestPersistence_SnapshotIsRestored(t *testing.T) {
 		t.Errorf("expected 2 log entries after restore, got %d", len(r2.log))
 	}
 }
+
+// Test: InstallSnapshot handler correctly updates follower state
+func TestInstallSnapshot_UpdatesFollowerState(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+
+	// Follower starts with some log entries
+	r.log = []LogEntry{
+		{Term: 1, Command: []byte("cmd1")},
+		{Term: 1, Command: []byte("cmd2")},
+		{Term: 1, Command: []byte("cmd3")},
+	}
+	r.currentTerm = 1
+
+	// Leader sends snapshot that covers more than follower has
+	args := &InstallSnapshotArgs{
+		Term:              2,
+		LeaderID:          "leader",
+		LastIncludedIndex: 10,
+		LastIncludedTerm:  2,
+		Data:              []byte("snapshot-data"),
+	}
+	reply := &InstallSnapshotReply{}
+
+	r.InstallSnapshot(args, reply)
+
+	// Verify follower updated its state
+	if r.lastIncludedIndex != 10 {
+		t.Errorf("expected lastIncludedIndex=10, got %d", r.lastIncludedIndex)
+	}
+	if r.lastIncludedTerm != 2 {
+		t.Errorf("expected lastIncludedTerm=2, got %d", r.lastIncludedTerm)
+	}
+	if string(r.snapshotData) != "snapshot-data" {
+		t.Errorf("expected snapshotData='snapshot-data', got '%s'", r.snapshotData)
+	}
+	// Log should be empty (snapshot covers everything follower had)
+	if len(r.log) != 0 {
+		t.Errorf("expected empty log after snapshot, got %d entries", len(r.log))
+	}
+	// Term should be updated
+	if r.currentTerm != 2 {
+		t.Errorf("expected term=2, got %d", r.currentTerm)
+	}
+}
+
+// Test: InstallSnapshot rejects stale leader
+func TestInstallSnapshot_RejectsStaleLeader(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+	r.currentTerm = 5
+
+	// Stale leader (term 3) sends snapshot
+	args := &InstallSnapshotArgs{
+		Term:              3, // less than follower's term
+		LeaderID:          "leader",
+		LastIncludedIndex: 10,
+		LastIncludedTerm:  3,
+		Data:              []byte("snapshot-data"),
+	}
+	reply := &InstallSnapshotReply{}
+
+	r.InstallSnapshot(args, reply)
+
+	// Follower should reject - state unchanged
+	if r.lastIncludedIndex != 0 {
+		t.Errorf("expected lastIncludedIndex=0 (unchanged), got %d", r.lastIncludedIndex)
+	}
+	if reply.Term != 5 {
+		t.Errorf("expected reply.Term=5, got %d", reply.Term)
+	}
+}
+
+// Test: InstallSnapshot ignores older snapshot
+func TestInstallSnapshot_IgnoresOlderSnapshot(t *testing.T) {
+	r := newTestRaft(t, "follower", []string{"leader"}, nil)
+	r.currentTerm = 2
+	r.lastIncludedIndex = 20 // already have snapshot at index 20
+	r.lastIncludedTerm = 2
+	r.snapshotData = []byte("existing-snapshot")
+
+	// Leader sends older snapshot (index 10 < 20)
+	args := &InstallSnapshotArgs{
+		Term:              2,
+		LeaderID:          "leader",
+		LastIncludedIndex: 10, // older than what we have
+		LastIncludedTerm:  1,
+		Data:              []byte("old-snapshot"),
+	}
+	reply := &InstallSnapshotReply{}
+
+	r.InstallSnapshot(args, reply)
+
+	// Should keep existing snapshot
+	if r.lastIncludedIndex != 20 {
+		t.Errorf("expected lastIncludedIndex=20, got %d", r.lastIncludedIndex)
+	}
+	if string(r.snapshotData) != "existing-snapshot" {
+		t.Errorf("snapshot data should be unchanged")
+	}
+}

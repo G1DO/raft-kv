@@ -21,6 +21,7 @@ const (
 type ApplyMsg struct {
 	CommandIndex int    // index of the committed command
 	Command      []byte // the command to apply
+	IsSnapshot   bool   // true if Command contains snapshot data (not a regular command)
 }
 
 type Raft struct {
@@ -296,27 +297,46 @@ func (r *Raft) sendHeartbeats() {
 }
 
 // sendHeartbeat sends a heartbeat (with log entries) to one peer
+// If peer is too far behind (needs entries we compacted), sends snapshot instead
 func (r *Raft) sendHeartbeat(peer string) {
 	r.mu.Lock()
 
 	// Step 1: Get nextIndex for this peer
 	nextIdx := r.nextIndex[peer]
 
-	// Step 2: Calculate PrevLogIndex and PrevLogTerm
+	// Step 2: Check if we need to send snapshot instead
+	// If nextIndex <= lastIncludedIndex, the entries peer needs are compacted
+	if nextIdx <= r.lastIncludedIndex {
+		r.mu.Unlock()
+		r.sendInstallSnapshot(peer)
+		return
+	}
+
+	// Step 3: Calculate PrevLogIndex and PrevLogTerm
 	// PrevLogIndex = entry right before what we're sending
 	prevLogIndex := nextIdx - 1
 	prevLogTerm := 0
-	if prevLogIndex > 0 && prevLogIndex <= len(r.log) {
-		prevLogTerm = r.log[prevLogIndex-1].Term // -1 because log is 0-indexed
+
+	// Get term from snapshot or log depending on where prevLogIndex falls
+	if prevLogIndex == r.lastIncludedIndex {
+		// Entry is exactly at snapshot boundary
+		prevLogTerm = r.lastIncludedTerm
+	} else if prevLogIndex > r.lastIncludedIndex {
+		// Entry is in our log
+		sliceIdx := prevLogIndex - r.lastIncludedIndex - 1
+		if sliceIdx >= 0 && sliceIdx < len(r.log) {
+			prevLogTerm = r.log[sliceIdx].Term
+		}
 	}
 
-	// Step 3: Get entries to send (from nextIndex to end of log)
+	// Step 4: Get entries to send (from nextIndex to end of log)
 	var entries []LogEntry
-	if nextIdx <= len(r.log) {
-		entries = r.log[nextIdx-1:] // -1 because log is 0-indexed
+	sliceStart := nextIdx - r.lastIncludedIndex - 1
+	if sliceStart >= 0 && sliceStart < len(r.log) {
+		entries = r.log[sliceStart:]
 	}
 
-	// Step 4: Build the args with all fields
+	// Step 5: Build the args with all fields
 	args := AppendEntriesArgs{
 		Term:         r.currentTerm,
 		LeaderID:     r.id,
@@ -337,7 +357,7 @@ func (r *Raft) sendHeartbeat(peer string) {
 		return // peer unreachable, ignore
 	}
 
-	// Step 5: Handle success/failure
+	// Step 6: Handle success/failure
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -373,6 +393,54 @@ func (r *Raft) sendHeartbeat(peer string) {
 			r.nextIndex[peer]--
 		}
 	}
+}
+
+// sendInstallSnapshot sends leader's snapshot to a peer that's too far behind
+func (r *Raft) sendInstallSnapshot(peer string) {
+	r.mu.Lock()
+
+	// Build InstallSnapshot args
+	args := InstallSnapshotArgs{
+		Term:              r.currentTerm,
+		LeaderID:          r.id,
+		LastIncludedIndex: r.lastIncludedIndex,
+		LastIncludedTerm:  r.lastIncludedTerm,
+		Data:              r.snapshotData,
+	}
+
+	r.mu.Unlock()
+
+	// Send the RPC
+	var reply InstallSnapshotReply
+	ok := r.callRPC(peer, "InstallSnapshot", &args, &reply)
+	if !ok {
+		return // peer unreachable
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// If reply has higher term, step down
+	if reply.Term > r.currentTerm {
+		r.currentTerm = reply.Term
+		r.state = Follower
+		r.votedFor = ""
+		r.persist()
+		if r.heartbeatTimer != nil {
+			r.heartbeatTimer.Stop()
+		}
+		return
+	}
+
+	// Only update if we're still leader
+	if r.state != Leader {
+		return
+	}
+
+	// Snapshot was accepted - update nextIndex and matchIndex
+	// Peer is now caught up to our snapshot
+	r.nextIndex[peer] = r.lastIncludedIndex + 1
+	r.matchIndex[peer] = r.lastIncludedIndex
 }
 
 // updateCommitIndex checks if any new entries can be committed
@@ -507,6 +575,21 @@ type AppendEntriesReply struct {
 	Success bool // true if follower accepted
 }
 
+// InstallSnapshotArgs is sent by leader when follower is too far behind
+// Instead of sending thousands of log entries, leader sends its snapshot
+type InstallSnapshotArgs struct {
+	Term              int    // leader's term
+	LeaderID          string // so follower can redirect clients
+	LastIncludedIndex int    // snapshot replaces all entries up through this index
+	LastIncludedTerm  int    // term of lastIncludedIndex
+	Data              []byte // raw snapshot bytes (serialized state machine)
+}
+
+// InstallSnapshotReply is the response to InstallSnapshot
+type InstallSnapshotReply struct {
+	Term int // follower's current term (for leader to update itself)
+}
+
 // AppendEntries handles incoming heartbeats and log entries from leader
 func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	r.mu.Lock()
@@ -576,6 +659,87 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 }
 
+// InstallSnapshot handles incoming snapshot from leader
+// Called when follower is too far behind to catch up via log entries
+//
+// Flow:
+//   Leader: "You're at index 5000, but I compacted up to 900000. Here's my snapshot."
+//   Follower: Replaces entire state with snapshot, discards old log
+func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	reply.Term = r.currentTerm
+
+	// Rule 1: Reject if leader's term is stale
+	if args.Term < r.currentTerm {
+		return
+	}
+
+	// Rule 2: Update term if leader has higher term
+	if args.Term > r.currentTerm {
+		r.currentTerm = args.Term
+		r.votedFor = ""
+		r.persist()
+	}
+
+	// Accept leader, become follower
+	r.state = Follower
+	r.resetElectionTimer()
+
+	// Rule 3: Ignore if we already have a newer snapshot
+	if args.LastIncludedIndex <= r.lastIncludedIndex {
+		return
+	}
+
+	// Save snapshot to disk FIRST (crash safety)
+	snapshot := SnapshotState{
+		LastIncludedIndex: args.LastIncludedIndex,
+		LastIncludedTerm:  args.LastIncludedTerm,
+		Data:              args.Data,
+	}
+	SaveSnapshot(r.snapshotPath, snapshot)
+
+	// Discard log entries covered by snapshot
+	// Case 1: Snapshot covers all our log entries
+	// Case 2: Snapshot covers only some entries (keep entries after snapshot)
+	lastLogIndex := r.lastIncludedIndex + len(r.log)
+	if args.LastIncludedIndex >= lastLogIndex {
+		// Snapshot is newer than our entire log - discard everything
+		r.log = []LogEntry{}
+	} else {
+		// Keep entries after the snapshot
+		sliceIndex := args.LastIncludedIndex - r.lastIncludedIndex
+		if sliceIndex > 0 && sliceIndex < len(r.log) {
+			r.log = r.log[sliceIndex:]
+		}
+	}
+
+	// Update snapshot metadata
+	r.lastIncludedIndex = args.LastIncludedIndex
+	r.lastIncludedTerm = args.LastIncludedTerm
+	r.snapshotData = args.Data
+
+	// Reset commitIndex and lastApplied to snapshot point
+	// (state machine will be restored from snapshot)
+	if r.commitIndex < args.LastIncludedIndex {
+		r.commitIndex = args.LastIncludedIndex
+	}
+	if r.lastApplied < args.LastIncludedIndex {
+		r.lastApplied = args.LastIncludedIndex
+	}
+
+	// Signal application to load snapshot into state machine
+	// The applyCh will receive a special message with the snapshot
+	if r.applyCh != nil {
+		r.applyCh <- ApplyMsg{
+			CommandIndex: args.LastIncludedIndex,
+			Command:      args.Data, // snapshot data for state machine to restore
+			IsSnapshot:   true,
+		}
+	}
+}
+
 // RPCMessage wraps all RPC requests
 type RPCMessage struct {
     Type string
@@ -638,6 +802,13 @@ func (r *Raft) handleRPC(conn net.Conn) {
 		json.Unmarshal(msg.Data, &args)
 		var reply AppendEntriesReply
 		r.AppendEntries(&args, &reply)
+		response.Data, _ = json.Marshal(reply)
+
+	case "InstallSnapshot":
+		var args InstallSnapshotArgs
+		json.Unmarshal(msg.Data, &args)
+		var reply InstallSnapshotReply
+		r.InstallSnapshot(&args, &reply)
 		response.Data, _ = json.Marshal(reply)
 	}
 
