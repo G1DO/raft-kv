@@ -5,7 +5,7 @@ A distributed key-value store built on the Raft consensus algorithm. From scratc
 > **Status:** The single-node KV store (PUT/GET/DELETE over TCP, persistent WAL) runs
 > today. The full Raft layer — leader election, log replication, snapshots, dynamic
 > membership — is implemented and tested as a library, but is not yet wired into the
-> runnable binary; doing so is the next milestone. See [`docs/plan.md`](docs/plan.md).
+> runnable binary; doing so is the next milestone.
 
 ## What is this?
 
