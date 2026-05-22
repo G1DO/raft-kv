@@ -2,6 +2,11 @@
 
 A distributed key-value store built on the Raft consensus algorithm. From scratch, in Go.
 
+> **Status:** The single-node KV store (PUT/GET/DELETE over TCP, persistent WAL) runs
+> today. The full Raft layer — leader election, log replication, snapshots, dynamic
+> membership — is implemented and tested as a library, but is not yet wired into the
+> runnable binary; doing so is the next milestone. See [`docs/plan.md`](docs/plan.md).
+
 ## What is this?
 
 Multiple servers that agree on data, even when some crash or lose network connectivity. Write to one node, the cluster makes sure everyone agrees, your data survives failures.
@@ -283,18 +288,39 @@ raft-kv/
 
 ## Running
 
+The binary is a **single node** that always listens on `localhost:8080` and writes its
+log to `data/raft.log`. It parses no flags.
+
 ```bash
 # Build
 go build -o raft-kv ./cmd/server
 
-# Run a single node (for testing)
-./raft-kv --id node1 --addr localhost:8001 --data ./data/node1
-
-# Run a 3-node cluster
-./raft-kv --id node1 --addr localhost:8001 --peers localhost:8002,localhost:8003 --data ./data/node1
-./raft-kv --id node2 --addr localhost:8002 --peers localhost:8001,localhost:8003 --data ./data/node2
-./raft-kv --id node3 --addr localhost:8003 --peers localhost:8001,localhost:8002 --data ./data/node3
+# Run (listens on localhost:8080)
+./raft-kv
 ```
+
+Talk to it over the line protocol. Commands are **case-sensitive** and
+**single-space-delimited**:
+
+| Command | Result |
+|---|---|
+| `PUT <key> <value>` | `OK` |
+| `GET <key>` | the value, or `NOT_FOUND` |
+| `DELETE <key>` | `OK` |
+
+```bash
+$ printf 'PUT foo bar\nGET foo\nDELETE foo\nGET foo\n' | nc localhost 8080
+OK
+bar
+OK
+NOT_FOUND
+```
+
+> **Multi-node Raft is not runnable yet.** Leader election, log replication, snapshots,
+> and dynamic membership are implemented as a library and exercised by the test suite
+> (`go test ./internal/raft/...`), but the binary above does not start a cluster. Wiring
+> Raft into the server — with `--id`/`--addr`/`--peers`/`--data` flags — is the next
+> milestone; see [`docs/plan.md`](docs/plan.md).
 
 ---
 
