@@ -1,0 +1,8 @@
+# Build artifacts
+/server
+/raft-kv
+*.test
+*.out
+
+# Runtime data
+/data/
