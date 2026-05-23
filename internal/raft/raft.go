@@ -179,26 +179,32 @@ func (r *Raft) resetElectionTimer() {
 // startElection is called when election timeout fires
 // Follower becomes Candidate and asks everyone for votes
 func (r *Raft) startElection() {
-r.mu.Lock()
+	r.mu.Lock()
 
 	// Change state to Candidate
 	r.state = Candidate
 
 	// Increment currentTerm (new election = new term)
-r.currentTerm++
+	r.currentTerm++
 
 	// Vote for yourself
 	r.votedFor = r.id
 	r.votesReceived = 1
 	r.persist() // save term and vote to disk
 
-	r.mu.Unlock()
-
-	// Reset election timer (in case we don't win, we'll try again)
+	// Reset election timer under the lock so r.electionTimer is not touched
+	// concurrently with AppendEntries/Start/InstallSnapshot (which also call
+	// resetElectionTimer while holding r.mu).
 	r.resetElectionTimer()
 
+	// Snapshot peers under the lock; AddServer/RemoveServer mutate r.peers
+	// under r.mu, so iterating it after unlock would be a read race.
+	peers := make([]string, len(r.peers))
+	copy(peers, r.peers)
+	r.mu.Unlock()
+
 	// Send RequestVote to all peers
-	for _, peer := range r.peers {
+	for _, peer := range peers {
 		go r.sendRequestVote(peer)
 	}
 }
@@ -285,21 +291,21 @@ func (r *Raft) becomeLeader() {
 	r.startHeartbeats()
 }
 
-// startHeartbeats begins the heartbeat loop (leader only)
-// Sends heartbeat to all peers every 50ms
+// startHeartbeats begins the heartbeat loop (leader only).
+// Sends heartbeat to all peers every 50ms. Caller must hold r.mu so the write
+// to r.heartbeatTimer is serialised with Stop and with the recursive call from
+// the timer callback.
 func (r *Raft) startHeartbeats() {
 	// Send immediately, then repeat every 50ms
 	r.sendHeartbeats()
 
 	r.heartbeatTimer = time.AfterFunc(50*time.Millisecond, func() {
 		r.mu.Lock()
+		defer r.mu.Unlock()
 		if r.state != Leader {
-			r.mu.Unlock()
 			return // not leader anymore, stop heartbeats
 		}
-		r.mu.Unlock()
-
-		// Send heartbeats and schedule next round
+		// Schedule next round under the lock.
 		r.startHeartbeats()
 	})
 }

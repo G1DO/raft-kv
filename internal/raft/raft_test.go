@@ -21,8 +21,10 @@ func newTestRaft(t *testing.T, id string, peers []string, applyCh chan ApplyMsg)
 
 	r := NewRaft(id, peers, applyCh, logPath, statePath, snapshotPath)
 
-	// Register cleanup
+	// Register cleanup: Stop halts any timers/listener so they don't fire after
+	// the test returns and race with another test's reads of the same fields.
 	t.Cleanup(func() {
+		r.Stop()
 		os.RemoveAll(tempDir)
 	})
 
@@ -227,7 +229,9 @@ func TestElectionTimeout(t *testing.T) {
 	r := newTestRaft(t, "node1", []string{"node2", "node3"}, nil)
 
 	// Start election timer
+	r.mu.Lock()
 	r.resetElectionTimer()
+	r.mu.Unlock()
 
 	// Wait for timeout (max 300ms + buffer)
 	time.Sleep(400 * time.Millisecond)
@@ -378,7 +382,9 @@ func TestRPC_AppendEntriesOverNetwork(t *testing.T) {
 	defer follower.listener.Close()
 
 	// Start follower's election timer (so AppendEntries can reset it)
+	follower.mu.Lock()
 	follower.resetElectionTimer()
+	follower.mu.Unlock()
 
 	// Leader sends heartbeat to follower
 	args := &AppendEntriesArgs{
@@ -418,9 +424,11 @@ func TestCluster_ElectsLeader(t *testing.T) {
 	node3.peers = []string{node1.rpcAddr, node2.rpcAddr}
 
 	// Start election timers on all nodes
-	node1.resetElectionTimer()
-	node2.resetElectionTimer()
-	node3.resetElectionTimer()
+	for _, n := range []*Raft{node1, node2, node3} {
+		n.mu.Lock()
+		n.resetElectionTimer()
+		n.mu.Unlock()
+	}
 
 	// Wait for election to happen (max 500ms for timeout + some buffer)
 	time.Sleep(800 * time.Millisecond)
@@ -502,7 +510,9 @@ func TestSendHeartbeat_IncludesLogEntries(t *testing.T) {
 
 	// Leader sends heartbeat (which should include entries)
 	leader.peers = []string{follower.rpcAddr}
+	follower.mu.Lock()
 	follower.resetElectionTimer() // so AppendEntries can reset it
+	follower.mu.Unlock()
 	leader.sendHeartbeat(follower.rpcAddr)
 
 	// Give it a moment
@@ -543,7 +553,9 @@ func TestLeader_UpdatesIndicesOnSuccess(t *testing.T) {
 	leader.matchIndex = map[string]int{follower.rpcAddr: 0}
 	leader.peers = []string{follower.rpcAddr}
 
+	follower.mu.Lock()
 	follower.resetElectionTimer()
+	follower.mu.Unlock()
 	leader.sendHeartbeat(follower.rpcAddr)
 
 	// Give it a moment
@@ -602,8 +614,12 @@ func TestLeader_CommitsOnMajority(t *testing.T) {
 	}
 
 	// Start election timers on followers
+	follower1.mu.Lock()
 	follower1.resetElectionTimer()
+	follower1.mu.Unlock()
+	follower2.mu.Lock()
 	follower2.resetElectionTimer()
+	follower2.mu.Unlock()
 
 	// Leader sends heartbeats to both
 	leader.sendHeartbeat(follower1.rpcAddr)
@@ -652,7 +668,9 @@ func TestApplyChannel_ReceivesCommittedEntries(t *testing.T) {
 	leader.nextIndex = map[string]int{follower.rpcAddr: 1}
 	leader.matchIndex = map[string]int{follower.rpcAddr: 0}
 
+	follower.mu.Lock()
 	follower.resetElectionTimer()
+	follower.mu.Unlock()
 	leader.sendHeartbeat(follower.rpcAddr)
 
 	// Wait for replication
