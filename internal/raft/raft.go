@@ -48,6 +48,7 @@ type Raft struct {
 	// Networking
 	rpcAddr  string       // address this node listens on for RPCs
 	listener net.Listener // TCP listener for incoming RPCs
+	leaderID string       // id of the leader we last heard from ("" if unknown)
 
 	// Log replication
 	log         []LogEntry // the log entries
@@ -266,6 +267,7 @@ func (r *Raft) handleVoteResponse(reply *RequestVoteReply) {
 // becomeLeader transitions from candidate to leader
 func (r *Raft) becomeLeader() {
 	r.state = Leader
+	r.leaderID = r.id
 	if r.electionTimer != nil {
 		r.electionTimer.Stop() // leaders don't need election timer
 	}
@@ -641,6 +643,9 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 
 	// Step down to follower (even if we were candidate or leader)
 	r.state = Follower
+
+	// Record who the leader is so we can redirect clients
+	r.leaderID = args.LeaderID
 
 	// Reset election timer - leader is alive!
 	r.resetElectionTimer()
@@ -1102,6 +1107,47 @@ func (r *Raft) GetPeers() []string {
 	result := make([]string, len(r.peers))
 	copy(result, r.peers)
 	return result
+}
+
+// Start arms the election timer so this node can begin participating in
+// elections. NewRaft only loads state from disk; it does not start any timers.
+// Call this once, after StartRPCServer and after peers are wired up.
+func (r *Raft) Start() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resetElectionTimer()
+}
+
+// Stop shuts the node down: stops the election and heartbeat timers, steps down
+// to follower, and closes the RPC listener. Safe to call more than once.
+func (r *Raft) Stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.electionTimer != nil {
+		r.electionTimer.Stop()
+	}
+	if r.heartbeatTimer != nil {
+		r.heartbeatTimer.Stop()
+	}
+	r.state = Follower
+	if r.listener != nil {
+		r.listener.Close()
+	}
+}
+
+// IsLeader reports whether this node currently believes it is the leader.
+func (r *Raft) IsLeader() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state == Leader
+}
+
+// LeaderID returns the id of the leader this node last heard from, or "" if
+// unknown. A node that is itself leader returns its own id.
+func (r *Raft) LeaderID() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.leaderID
 }
 
 // ReadIndex implements linearizable reads by confirming leadership before reading.
