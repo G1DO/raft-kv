@@ -288,14 +288,15 @@ raft-kv/
 
 ## Running
 
-The binary is a **single node** that always listens on `localhost:8080` and writes its
-log to `data/raft.log`. It parses no flags.
+With no flags the binary runs as a **single node without Raft**: it listens on
+`localhost:8080` and writes its log to `data/raft.log`. Passing `--id` switches it into
+**cluster mode**, where client commands go through Raft consensus.
 
 ```bash
 # Build
 go build -o raft-kv ./cmd/server
 
-# Run (listens on localhost:8080)
+# Run a single node (no Raft), listening on localhost:8080
 ./raft-kv
 ```
 
@@ -316,11 +317,50 @@ OK
 NOT_FOUND
 ```
 
-> **Multi-node Raft is not runnable yet.** Leader election, log replication, snapshots,
-> and dynamic membership are implemented as a library and exercised by the test suite
-> (`go test ./internal/raft/...`), but the binary above does not start a cluster. Wiring
-> Raft into the server — with `--id`/`--addr`/`--peers`/`--data` flags — is the next
-> milestone; see [`docs/plan.md`](docs/plan.md).
+### Running a Raft cluster
+
+In cluster mode each node needs its **own** client port, peer-RPC port, and data dir.
+The `--peers` flag lists the *other* nodes as `id@raftAddr@clientAddr`:
+
+| Flag | Meaning |
+|---|---|
+| `--id` | this node's id (enables cluster mode) |
+| `--addr` | client/KV listen address |
+| `--raft-addr` | peer-RPC listen address |
+| `--peers` | other nodes as `id@raftAddr@clientAddr`, comma-separated |
+| `--data` | per-node data directory |
+
+The quickest way to start a local 3-node cluster:
+
+```bash
+./scripts/cluster-up.sh        # nodes on client ports 8081/8082/8083
+```
+
+Only the **leader** accepts writes and serves linearizable reads (via ReadIndex). A
+non-leader replies `NOT_LEADER <leaderClientAddr>` — point your client at that address:
+
+```bash
+$ printf 'PUT foo bar\n' | nc localhost 8081
+NOT_LEADER 127.0.0.1:8083        # 8081 is a follower; the leader is on 8083
+$ printf 'PUT foo bar\nGET foo\n' | nc localhost 8083
+OK
+bar
+```
+
+Membership can be changed at runtime against the leader:
+
+| Command | Result |
+|---|---|
+| `ADD_SERVER <id> <raftAddr>` | `OK` (or `NOT_LEADER <addr>`) |
+| `REMOVE_SERVER <id> <raftAddr>` | `OK` (or `NOT_LEADER <addr>`) |
+
+`kill -9` the leader and a new one is elected within a couple of seconds; committed data
+is preserved and a restarted node rejoins by replaying its data dir. Nodes shut down
+gracefully on SIGINT/SIGTERM (step down, close listener).
+
+> **Known limitation:** the text protocol sends raw commands with no client/request id,
+> so write retries across a failover are *at-least-once* (the `KVStore` dedup in
+> `store.go` only triggers for JSON `Command` payloads). See [`docs/plan.md`](docs/plan.md).
 
 ---
 
