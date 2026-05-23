@@ -3,6 +3,7 @@ package kv
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 )
 
 // Command represents a client request with deduplication info
@@ -19,7 +20,10 @@ type kvSnapshot struct {
 	LastResult  map[string]string `json:"lastResult"`
 }
 
+// mu guards all maps below: under Raft the apply goroutine writes while client
+// GETs read concurrently.
 type KVStore struct {
+	mu          sync.Mutex
 	data        map[string]string // the actual KV data
 	lastRequest map[string]int64  // clientId → last requestId processed
 	lastResult  map[string]string // clientId → result of that request
@@ -37,6 +41,9 @@ func NewKVStore() *KVStore {
 // Apply processes a command, handling duplicates
 // Input is JSON-encoded Command struct
 func (s *KVStore) Apply(commandBytes []byte) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// 1. Parse the command
 	var cmd Command
 	if err := json.Unmarshal(commandBytes, &cmd); err != nil {
@@ -103,6 +110,8 @@ func (s *KVStore) executeOp(op string) string {
 // Snapshot serializes the entire KVStore state to bytes.
 // This includes data AND duplicate detection state.
 func (s *KVStore) Snapshot() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	snap := kvSnapshot{
 		Data:        s.data,
 		LastRequest: s.lastRequest,
@@ -113,6 +122,8 @@ func (s *KVStore) Snapshot() ([]byte, error) {
 
 // Restore loads state from a snapshot, replacing current state.
 func (s *KVStore) Restore(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var snap kvSnapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
