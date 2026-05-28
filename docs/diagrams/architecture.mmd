@@ -1,0 +1,26 @@
+%% raft-kv per-node architecture.
+%% Source of truth: internal/server/raft_server.go + internal/raft/raft.go.
+%% Referenced from docs/design.md.
+
+flowchart TB
+    client(["client<br/>(TCP line protocol)"])
+
+    subgraph node ["raft-kv node"]
+        rs["RaftServer<br/><i>internal/server/raft_server.go</i>"]
+        raft["raft.Raft<br/><i>election · replication · snapshots</i>"]
+        kv["KVStore.Apply<br/><i>internal/kv/store.go</i>"]
+        wal[("WAL + state +<br/>snapshot files")]
+    end
+
+    peers["peer nodes<br/>(JSON-over-TCP RPC)"]
+
+    client -- "PUT / GET / DELETE" --> rs
+    rs -- "AppendCommand<br/>(writes)" --> raft
+    rs -- "ReadIndex<br/>(linearizable reads)" --> raft
+    rs -- "AddServer / RemoveServer" --> raft
+    raft -- "RequestVote<br/>AppendEntries<br/>InstallSnapshot" <--> peers
+    raft -- "persist on every commit" --> wal
+    raft -- "apply at commit" --> kv
+
+    classDef boundary stroke-dasharray:4 4,fill:#fafafa,color:#222;
+    class node boundary;
