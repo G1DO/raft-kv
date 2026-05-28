@@ -1,0 +1,20 @@
+%% Trust boundary for a raft-kv node.
+%% Inside the dashed box = trusted code we wrote. Anything crossing an arrow is hostile.
+%% Referenced from docs/threat-model.md.
+
+flowchart TB
+    client(["client"])
+    peer(["peer node"])
+
+    subgraph node ["raft-kv process — trust boundary"]
+        direction TB
+        proc["in-process state<br/>(mu-protected)"]
+        disk[("local disk:<br/>WAL · state · snapshot")]
+        proc --- disk
+    end
+
+    client -- "TCP line protocol<br/><b>plaintext, unauth</b>" --> node
+    peer  -- "JSON-over-TCP RPC<br/><b>plaintext, unauth</b>" --> node
+
+    classDef boundary stroke-dasharray:4 4,fill:#fafafa,color:#222;
+    class node boundary;
