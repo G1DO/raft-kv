@@ -1,0 +1,33 @@
+name: diagrams
+
+# Fails any PR (or push to main) that touches a .mmd source without
+# re-rendering the corresponding .svg + .manifest. The check is pure
+# sha256sum + diff — no Node, no Chromium required on the runner.
+#
+# When this fails, the author should run locally:
+#     npm ci
+#     npm run docs:diagrams
+#     git add docs/diagrams/rendered
+
+on:
+  pull_request:
+    paths:
+      - "docs/diagrams/**"
+      - "scripts/render-diagrams.sh"
+      - "scripts/check-diagrams.sh"
+      - ".github/workflows/diagrams.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/diagrams/**"
+      - "scripts/render-diagrams.sh"
+      - "scripts/check-diagrams.sh"
+      - ".github/workflows/diagrams.yml"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify manifest matches sources
+        run: ./scripts/check-diagrams.sh
