@@ -360,7 +360,7 @@ gracefully on SIGINT/SIGTERM (step down, close listener).
 
 > **Known limitation:** the text protocol sends raw commands with no client/request id,
 > so write retries across a failover are *at-least-once* (the `KVStore` dedup in
-> `store.go` only triggers for JSON `Command` payloads). See [`docs/plan.md`](docs/plan.md).
+> `store.go` only triggers for JSON `Command` payloads).
 
 ---
 
