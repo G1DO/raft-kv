@@ -6,3 +6,7 @@
 
 # Runtime data
 /data/
+
+# Docs tooling (Node)
+/node_modules/
+npm-debug.log*

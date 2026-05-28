@@ -1,0 +1,12 @@
+{
+  "name": "raft-kv-docs",
+  "private": true,
+  "description": "Docs tooling only (Mermaid diagram rendering). Not part of the Go module.",
+  "scripts": {
+    "docs:diagrams": "scripts/render-diagrams.sh",
+    "docs:diagrams:check": "scripts/check-diagrams.sh"
+  },
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "11.4.0"
+  }
+}
