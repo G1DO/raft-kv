@@ -433,6 +433,18 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
 
 ---
 
+## Design & decisions
+
+- [docs/design.md](docs/design.md) — problem, goals & non-goals, failure modes, consistency stance.
+- [docs/decisions/](docs/decisions/) — ADRs, each naming the rejected alternative:
+  - [ADR-001](docs/decisions/ADR-001-single-server-membership.md) — single-server membership vs. joint consensus
+  - [ADR-002](docs/decisions/ADR-002-readindex-vs-leases.md) — ReadIndex vs. lease-based reads
+  - [ADR-003](docs/decisions/ADR-003-json-tcp-vs-grpc.md) — hand-rolled JSON-over-TCP vs. gRPC
+  - [ADR-004](docs/decisions/ADR-004-panic-on-corrupt-file.md) — panic vs. return-error on corrupt persistent file
+- [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; what M8's mTLS work will fix.
+
+---
+
 ## Resources
 
 - [Raft Paper](https://raft.github.io/raft.pdf) — Read this multiple times
