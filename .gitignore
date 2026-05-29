@@ -1,6 +1,7 @@
 # Build artifacts
 /server
 /raft-kv
+/bench
 *.test
 *.out
 
