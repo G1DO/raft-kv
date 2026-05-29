@@ -93,6 +93,41 @@ Under partition, the design favours **consistency over availability** (CP):
 | Disk corruption (WAL / state / snapshot) | `NewRaft` fails to parse on startup | **Process panics.** Operator must restore from another node. See [ADR-004](decisions/ADR-004-panic-on-corrupt-file.md). | Node down until manual recovery |
 | Process kill during write | WAL flush may be partial | Replay drops the trailing partial record; uncommitted entries are re-replicated by the next leader | At-least-once retry semantics for the client (see below) |
 
+## Deployment (Kubernetes)
+
+The cluster ships as a container image (multi-stage build → `distroless/static`,
+non-root uid 65532, ~10 MB; see [Dockerfile](../Dockerfile)) and runs on
+Kubernetes as a **StatefulSet, not a Deployment**. A consensus group needs two
+things a Deployment cannot give:
+
+- **Stable identity.** Each member must keep the same name and DNS record across
+  reschedules, because peers address each other by name. StatefulSet pod
+  `raft-kv-0` is always `raft-kv-0`, resolvable at `raft-kv-0.raft-kv` through a
+  headless `Service`; a Deployment hands out random pod names.
+- **Stable per-member storage.** Each member owns its WAL + snapshots. A
+  StatefulSet binds pod `raft-kv-N` to its own `PersistentVolumeClaim`
+  (`data-raft-kv-N`) and reattaches the *same* volume after a reschedule, so the
+  pod rejoins with its history rather than as a blank node. A Deployment shares
+  no stable per-pod volume.
+
+**Peer discovery.** A StatefulSet uses one pod template, so every pod gets the
+same command line — yet each Raft node's peer list must exclude itself (quorum is
+sized `len(peers)+1`). Rather than generate a per-pod list (the distroless image
+has no shell to do so at startup), every pod is handed the *same* `--peers`
+spanning the whole cluster plus `--id=$(POD_NAME)` from the downward API, and the
+binary drops its own entry ([cmd/server/main.go](../cmd/server/main.go),
+`parsePeers`). This is fixed-size static membership over predictable DNS names.
+
+Two consensus-specific gotchas the [manifest](../deploy/k8s/raft-kv.yaml) handles:
+the headless Service sets `publishNotReadyAddresses: true` so peers can resolve
+each other to hold the *first* election (which happens before any pod is Ready),
+and `podManagementPolicy: Parallel` starts the members together instead of
+blocking on a lone `raft-kv-0` that cannot reach quorum by itself.
+`scripts/k8s-up.sh` stands the whole thing up on kind.
+
+Validated end-to-end: deleting the leader pod elects a new leader within one
+election timeout and the rescheduled pod rejoins from its PVC with no data loss.
+
 ## Known correctness gaps
 
 These are real and deliberate. Listed here so reviewers don't have to find them by reading the code.
