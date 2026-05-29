@@ -380,6 +380,34 @@ go test ./internal/kv/... -v
 
 ---
 
+## Benchmarks
+
+Measured on a local 3-node cluster by the `cmd/bench` harness (full method, tables,
+and caveats in **[docs/benchmarks.md](docs/benchmarks.md)**). Single-machine,
+loopback numbers — the point is the *shape*, not datacenter figures.
+
+| What | Result | How |
+|---|---|---|
+| **Election MTTR** (kill leader → new leader serves writes) | **p50 244 ms · p99 342 ms** over 100 trials | `go run ./cmd/bench mttr` |
+| **Write throughput** | peak **~144 writes/sec** (8 clients); latency floor **~50 ms** = the heartbeat interval | `go run ./cmd/bench throughput` |
+| **Quorum loss** | minority leader **refuses** the linearizable read (`NOT_LEADER`); recovers in ~50 ms, data preserved | `go run ./cmd/bench partition` |
+
+Two honest findings worth calling out: write latency is floored at the **50 ms
+heartbeat interval** (replication is heartbeat-driven), and throughput **collapses
+past ~8 concurrent writers** as writes hit the 3 s commit timeout — a contention
+cliff, documented rather than hidden.
+
+A scripted demo of an induced failure → re-election → successful write:
+
+```bash
+./scripts/chaos-demo.sh
+```
+
+<!-- TODO: record an asciinema cast of chaos-demo.sh and link it here:
+     asciinema rec demo.cast -c ./scripts/chaos-demo.sh   (then upload & paste the URL) -->
+
+---
+
 ## What I learned building this
 
 **1. Randomized timeouts aren't optional**
@@ -442,6 +470,7 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
   - [ADR-003](docs/decisions/ADR-003-json-tcp-vs-grpc.md) — hand-rolled JSON-over-TCP vs. gRPC
   - [ADR-004](docs/decisions/ADR-004-panic-on-corrupt-file.md) — panic vs. return-error on corrupt persistent file
 - [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; what M8's mTLS work will fix.
+- [docs/benchmarks.md](docs/benchmarks.md) — measured election MTTR, throughput, and quorum-loss behaviour, with the exact method.
 
 ---
 
