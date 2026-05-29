@@ -1,0 +1,38 @@
+# systemd unit for one raft-kv node on an EC2 instance (or any Linux host).
+#
+# Install:
+#   sudo cp raft-kv /usr/local/bin/raft-kv
+#   sudo cp deploy/aws/raft-kv.service /etc/systemd/system/raft-kv.service
+#   sudo cp deploy/aws/raft-kv.env.example /etc/raft-kv.env   # then edit it
+#   sudo useradd --system --home /var/lib/raft-kv --create-home raftkv || true
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now raft-kv
+#
+# Logs:   journalctl -u raft-kv -f
+# Each node gets its own /etc/raft-kv.env with that node's ID/ADDR/PEERS.
+
+[Unit]
+Description=raft-kv node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=raftkv
+Group=raftkv
+EnvironmentFile=/etc/raft-kv.env
+# Bind the listeners on all interfaces; advertise reachable addresses via PEERS.
+ExecStart=/usr/local/bin/raft-kv \
+  --id ${RAFT_ID} \
+  --addr 0.0.0.0:8080 \
+  --raft-addr 0.0.0.0:9000 \
+  --peers ${RAFT_PEERS} \
+  --data /var/lib/raft-kv
+Restart=on-failure
+RestartSec=2
+# Graceful step-down on stop (the binary handles SIGTERM).
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

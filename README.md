@@ -362,6 +362,15 @@ gracefully on SIGINT/SIGTERM (step down, close listener).
 > so write retries across a failover are *at-least-once* (the `KVStore` dedup in
 > `store.go` only triggers for JSON `Command` payloads).
 
+### Deploying a cluster (Docker, Kubernetes, AWS)
+
+The same binary runs as a real multi-node cluster in containers or in the cloud.
+See [`deploy/README.md`](deploy/README.md) for:
+
+- **Docker Compose** — 3 isolated containers, one command (`docker compose up --build`).
+- **Kubernetes** — a StatefulSet + headless Service, runnable free on kind/minikube.
+- **AWS** — EC2 (systemd unit) or EKS, in [`deploy/aws/`](deploy/aws/README.md).
+
 ---
 
 ## Testing

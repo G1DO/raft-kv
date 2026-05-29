@@ -1,0 +1,72 @@
+# A 3-node raft-kv cluster, each node in its own container on a shared network.
+#
+# Inside the network nodes reach each other by service name (node1/2/3).
+# Each node binds 0.0.0.0 so it is reachable from its peers, and publishes its
+# client port to the host as 8081/8082/8083.
+#
+# The clientAddr in --peers is set to the *host-published* address
+# (localhost:808X) so that when you talk to the cluster from your host and hit
+# a follower, the NOT_LEADER redirect points somewhere your host can reach.
+#
+#   docker compose up --build
+#   printf 'PUT foo bar\n' | nc localhost 8081     # follow any NOT_LEADER hint
+#
+# Simulate a partition / crash:
+#   docker compose pause node1        # leader keeps quorum with node2+node3
+#   docker compose unpause node1
+#   docker compose stop node2         # kill a node; cluster still has 2/3
+
+services:
+  node1:
+    build: .
+    image: raft-kv:local
+    command:
+      - --id=node1
+      - --addr=0.0.0.0:8080
+      - --raft-addr=0.0.0.0:9000
+      - --peers=node2@node2:9000@localhost:8082,node3@node3:9000@localhost:8083
+      - --data=/data
+    ports:
+      - "8081:8080"
+    volumes:
+      - node1-data:/data
+    networks: [raft]
+
+  node2:
+    build: .
+    image: raft-kv:local
+    command:
+      - --id=node2
+      - --addr=0.0.0.0:8080
+      - --raft-addr=0.0.0.0:9000
+      - --peers=node1@node1:9000@localhost:8081,node3@node3:9000@localhost:8083
+      - --data=/data
+    ports:
+      - "8082:8080"
+    volumes:
+      - node2-data:/data
+    networks: [raft]
+
+  node3:
+    build: .
+    image: raft-kv:local
+    command:
+      - --id=node3
+      - --addr=0.0.0.0:8080
+      - --raft-addr=0.0.0.0:9000
+      - --peers=node1@node1:9000@localhost:8081,node2@node2:9000@localhost:8082
+      - --data=/data
+    ports:
+      - "8083:8080"
+    volumes:
+      - node3-data:/data
+    networks: [raft]
+
+networks:
+  raft:
+    driver: bridge
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

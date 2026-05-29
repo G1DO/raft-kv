@@ -1,0 +1,14 @@
+# Keep the build context small and reproducible.
+.git
+.github
+data
+raft-kv
+*.md
+docs
+scripts
+node_modules
+package*.json
+.puppeteerrc.cjs
+deploy
+Dockerfile
+.dockerignore

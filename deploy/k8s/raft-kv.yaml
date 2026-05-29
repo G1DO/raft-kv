@@ -1,0 +1,145 @@
+# raft-kv as a Kubernetes StatefulSet.
+#
+# Why a StatefulSet (not a Deployment):
+#   - stable network identity: each pod gets a predictable DNS name
+#       raft-kv-0.raft-kv.<ns>.svc.cluster.local
+#     which we use as both the node id and the peer address. A Deployment's
+#     pod names are random, so peers could never find each other.
+#   - stable storage: each pod gets its own PersistentVolumeClaim (raft.log /
+#     raft.state / raft.snapshot survive a pod restart/reschedule).
+#
+# podManagementPolicy: Parallel — a 3-node cluster needs 2 nodes up to elect a
+# leader, so we start them together instead of one-at-a-time (OrderedReady).
+#
+# Apply:
+#   kubectl apply -f deploy/k8s/raft-kv.yaml
+#   kubectl rollout status statefulset/raft-kv
+#
+# Talk to it from your laptop:
+#   kubectl port-forward svc/raft-kv-client 8080:8080
+#   printf 'PUT foo bar\nGET foo\n' | nc localhost 8080
+# (port-forward targets one pod; if it's a follower you'll get NOT_LEADER with
+#  an in-cluster address — see deploy/README.md for the leader-aware options.)
+
+---
+# Headless service: gives each pod a stable DNS A record. No cluster IP; this
+# is what peers use to reach one another.
+apiVersion: v1
+kind: Service
+metadata:
+  name: raft-kv
+  labels:
+    app: raft-kv
+spec:
+  clusterIP: None
+  selector:
+    app: raft-kv
+  ports:
+    - name: client
+      port: 8080
+    - name: raft
+      port: 9000
+  publishNotReadyAddresses: true # peers must resolve each other during startup
+
+---
+# A normal (load-balanced) service for clients. Lands on a random ready pod;
+# follow the NOT_LEADER hint to reach the leader.
+apiVersion: v1
+kind: Service
+metadata:
+  name: raft-kv-client
+  labels:
+    app: raft-kv
+spec:
+  selector:
+    app: raft-kv
+  ports:
+    - name: client
+      port: 8080
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: raft-kv
+spec:
+  serviceName: raft-kv # must match the headless service above
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: raft-kv
+  template:
+    metadata:
+      labels:
+        app: raft-kv
+    spec:
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsUser: 65532
+        runAsNonRoot: true
+        fsGroup: 65532
+      containers:
+        - name: raft-kv
+          image: raft-kv:local # see deploy/README.md for pushing to a registry
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: client
+              containerPort: 8080
+            - name: raft
+              containerPort: 9000
+          env:
+            - name: REPLICAS
+              value: "3"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          # Derive id + peer list from the pod ordinal, then exec the binary.
+          # HOSTNAME is e.g. "raft-kv-0"; ordinal is the trailing number.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              ORD="${HOSTNAME##*-}"
+              DOMAIN="raft-kv.${POD_NAMESPACE}.svc.cluster.local"
+              PEERS=""
+              i=0
+              while [ "$i" -lt "$REPLICAS" ]; do
+                if [ "$i" -ne "$ORD" ]; then
+                  P="raft-kv-${i}@raft-kv-${i}.${DOMAIN}:9000@raft-kv-${i}.${DOMAIN}:8080"
+                  PEERS="${PEERS:+$PEERS,}$P"
+                fi
+                i=$((i + 1))
+              done
+              echo "[$HOSTNAME] peers=$PEERS"
+              exec /usr/local/bin/raft-kv \
+                --id "$HOSTNAME" \
+                --addr 0.0.0.0:8080 \
+                --raft-addr 0.0.0.0:9000 \
+                --peers "$PEERS" \
+                --data /data
+          readinessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: raft
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+        # storageClassName: gp3   # uncomment on EKS to use an EBS gp3 volume
