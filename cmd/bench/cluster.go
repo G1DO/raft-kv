@@ -25,8 +25,8 @@ var defaultNodes = []nodeSpec{
 
 // Cluster manages a set of raft-kv nodes running as child processes.
 type Cluster struct {
-	binary  string              // path to the raft-kv binary
-	dataDir string              // root data directory; each node gets dataDir/<id>
+	binary  string // path to the raft-kv binary
+	dataDir string // root data directory; each node gets dataDir/<id>
 	nodes   []nodeSpec
 	procs   map[string]*os.Process // running node id -> process
 }
@@ -39,6 +39,27 @@ func BuildBinary(srcRoot, outPath string) error {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// setup builds the server binary into dataDir, creates a fresh 3-node cluster
+// (wiping any prior per-node data), and starts all nodes. Callers then WaitLeader.
+// src is the repo root to build ./cmd/server from.
+func setup(dataDir, src string) (*Cluster, error) {
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", dataDir, err)
+	}
+	binary := filepath.Join(dataDir, "raft-kv")
+	if err := BuildBinary(src, binary); err != nil {
+		return nil, fmt.Errorf("build binary: %w", err)
+	}
+	c := NewCluster(binary, dataDir, defaultNodes)
+	if err := c.CleanData(); err != nil {
+		return nil, fmt.Errorf("clean data: %w", err)
+	}
+	if err := c.StartAll(); err != nil {
+		return nil, fmt.Errorf("start cluster: %w", err)
+	}
+	return c, nil
 }
 
 // NewCluster creates a Cluster. Call StartAll to launch nodes.
@@ -152,6 +173,36 @@ func (c *Cluster) find(id string) (nodeSpec, bool) {
 		}
 	}
 	return nodeSpec{}, false
+}
+
+// idForClientAddr maps a client listen address back to its node id, e.g. the
+// address WaitLeader returns -> "node1".
+func (c *Cluster) idForClientAddr(addr string) (string, bool) {
+	for _, n := range c.nodes {
+		if n.ClientAddr == addr {
+			return n.ID, true
+		}
+	}
+	return "", false
+}
+
+// WaitNodeUp blocks until the node at clientAddr is serving the client API
+// (a connection succeeds and any protocol reply comes back — OK or NOT_LEADER),
+// which is the signal that a freshly restarted node has rejoined and is ready.
+func (c *Cluster) WaitNodeUp(clientAddr string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		cl, err := Dial(clientAddr)
+		if err == nil {
+			resp, derr := cl.roundtrip("GET __bench_probe__")
+			cl.Close()
+			if derr == nil && resp != "" {
+				return nil
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("node %s not up within %v", clientAddr, timeout)
 }
 
 // peersArg builds the --peers value for node id: every other node formatted as
