@@ -33,7 +33,7 @@ func main() {
 	case "mttr":
 		os.Exit(runMTTR(rest))
 	case "throughput":
-		runThroughput(rest)
+		os.Exit(runThroughput(rest))
 	case "partition":
 		runPartition(rest)
 	default:
@@ -41,19 +41,6 @@ func main() {
 		flag.Usage()
 		os.Exit(1)
 	}
-}
-
-func runThroughput(args []string) {
-	fs := flag.NewFlagSet("throughput", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: bench throughput [flags]")
-		fmt.Fprintln(os.Stderr, "\nMeasure steady-state write throughput and p99 commit latency.")
-		fmt.Fprintln(os.Stderr, "\nFlags:")
-		fs.PrintDefaults()
-	}
-	fs.Parse(args)
-	fmt.Fprintln(os.Stderr, "throughput: not yet implemented")
-	os.Exit(1)
 }
 
 func runPartition(args []string) {
