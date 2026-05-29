@@ -15,6 +15,17 @@ type Client struct {
 	rw   *bufio.ReadWriter
 }
 
+// do dials addr, sends one command (following at most one NOT_LEADER redirect),
+// and closes the connection. Convenience for one-shot probes.
+func do(addr, command string) (string, error) {
+	cl, err := Dial(addr)
+	if err != nil {
+		return "", err
+	}
+	defer cl.Close()
+	return cl.Do(command)
+}
+
 // Dial opens a TCP connection to addr.
 func Dial(addr string) (*Client, error) {
 	conn, err := net.Dial("tcp", addr)
