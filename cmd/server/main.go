@@ -53,7 +53,7 @@ func runCluster(id, addr, raftAddr, peers, dataDir string) {
 		os.Exit(1)
 	}
 
-	peerAddrs, hints, err := parsePeers(peers)
+	peerAddrs, hints, err := parsePeers(peers, id)
 	if err != nil {
 		fmt.Printf("invalid --peers: %v\n", err)
 		os.Exit(1)
@@ -93,8 +93,13 @@ func runCluster(id, addr, raftAddr, peers, dataDir string) {
 }
 
 // parsePeers turns "id@raftAddr@clientAddr,..." into the Raft peer-address list
-// (raft addresses) and an id->clientAddr hint map for client redirection.
-func parsePeers(peers string) ([]string, map[string]string, error) {
+// (raft addresses) and an id->clientAddr hint map for client redirection. The
+// entry matching selfID (if present) is dropped: a node must never list itself
+// among its peers, because Raft sizes the cluster as len(peers)+1. Tolerating
+// self in the list lets every node be handed one identical --peers spanning the
+// whole cluster — which is what a Kubernetes StatefulSet (shared pod template)
+// needs, since it cannot give each pod a different, self-excluding list.
+func parsePeers(peers, selfID string) ([]string, map[string]string, error) {
 	hints := make(map[string]string)
 	var addrs []string
 	if strings.TrimSpace(peers) == "" {
@@ -110,6 +115,9 @@ func parsePeers(peers string) ([]string, map[string]string, error) {
 			return nil, nil, fmt.Errorf("peer %q must be id@raftAddr@clientAddr", p)
 		}
 		peerID, peerRaft, peerClient := parts[0], parts[1], parts[2]
+		if peerID == selfID {
+			continue // never list self; quorum is sized as len(peers)+1
+		}
 		addrs = append(addrs, peerRaft)
 		hints[peerID] = peerClient
 	}
