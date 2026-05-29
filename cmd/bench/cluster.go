@@ -130,9 +130,15 @@ func (c *Cluster) KillAll() {
 	}
 }
 
-// WaitLeader polls running nodes until one accepts a write, then returns its
-// client address. It mirrors the patience of TestCluster_ElectsLeader
-// (raft_test.go:434) but uses active probing instead of a fixed sleep.
+// WaitLeader polls running nodes until one directly accepts a write, then
+// returns that node's client address — the actual leader. It mirrors the
+// patience of TestCluster_ElectsLeader (raft_test.go:434) but uses active
+// probing instead of a fixed sleep.
+//
+// The probe uses roundtrip, NOT Do: a non-leader replies NOT_LEADER (which is
+// not "OK"), so it is skipped rather than transparently redirected. That keeps
+// the returned address the genuine leader, and — because the probe is itself a
+// write — its success means a leader has committed an entry in its current term.
 func (c *Cluster) WaitLeader(timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -144,7 +150,7 @@ func (c *Cluster) WaitLeader(timeout time.Duration) (string, error) {
 			if err != nil {
 				continue
 			}
-			resp, err := cl.Do("PUT __bench_probe__ 1")
+			resp, err := cl.roundtrip("PUT __bench_probe__ 1")
 			cl.Close()
 			if err == nil && resp == "OK" {
 				return n.ClientAddr, nil
