@@ -1,0 +1,8 @@
+# Allow-list build context: only what `go build ./cmd/server` needs.
+# Everything else stays out — node_modules/, .git, the committed server/
+# raft-kv/bench binaries, data/, docs, scripts — keeping the context small
+# and the image free of stray artifacts.
+*
+!go.mod
+!cmd
+!internal
