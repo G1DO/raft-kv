@@ -35,23 +35,10 @@ func main() {
 	case "throughput":
 		os.Exit(runThroughput(rest))
 	case "partition":
-		runPartition(rest)
+		os.Exit(runPartition(rest))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n\n", sub)
 		flag.Usage()
 		os.Exit(1)
 	}
-}
-
-func runPartition(args []string) {
-	fs := flag.NewFlagSet("partition", flag.ExitOnError)
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: bench partition [flags]")
-		fmt.Fprintln(os.Stderr, "\nMeasure recovery under network partition (quorum loss).")
-		fmt.Fprintln(os.Stderr, "\nFlags:")
-		fs.PrintDefaults()
-	}
-	fs.Parse(args)
-	fmt.Fprintln(os.Stderr, "partition: not yet implemented")
-	os.Exit(1)
 }
