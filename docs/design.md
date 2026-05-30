@@ -118,7 +118,7 @@ spanning the whole cluster plus `--id=$(POD_NAME)` from the downward API, and th
 binary drops its own entry ([cmd/server/main.go](../cmd/server/main.go),
 `parsePeers`). This is fixed-size static membership over predictable DNS names.
 
-Two consensus-specific gotchas the [manifest](../deploy/k8s/raft-kv.yaml) handles:
+Two consensus-specific gotchas the [chart](../deploy/helm/raft-kv/) handles:
 the headless Service sets `publishNotReadyAddresses: true` so peers can resolve
 each other to hold the *first* election (which happens before any pod is Ready),
 and `podManagementPolicy: Parallel` starts the members together instead of
