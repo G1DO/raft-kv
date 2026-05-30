@@ -1,0 +1,73 @@
+# Default values for the raft-kv chart. This chart is the single source of truth
+# for the Kubernetes deploy. The defaults reproduce the 3-node StatefulSet
+# verified on kind (leader-kill failover + PVC rejoin, 2026-05-30).
+
+# Number of Raft members. The --peers list handed to every pod is regenerated
+# from this value (see templates/_helpers.tpl "raft-kv.peers"), so scaling the
+# cluster is a single-value change rather than a manual edit of the peer string.
+#
+# Run an ODD count (3, 5, 7) so a majority quorum is unambiguous. A consensus
+# group is NOT a stateless service: more voters do not add throughput, and
+# membership changes are deliberate — treat this as a deploy-time decision, not
+# an autoscale target.
+replicaCount: 3
+
+image:
+  repository: raft-kv
+  tag: dev
+  # IfNotPresent suits a kind-loaded local image (never reach out to a registry
+  # for a tag that is already on the node). Set to Always for a real registry.
+  pullPolicy: IfNotPresent
+
+# Client KV protocol (client) and Raft peer RPC (raft) ports. Changing either
+# updates the container ports, the Service, the probes, and the generated peers
+# together — they cannot drift apart.
+ports:
+  client: 8080
+  raft: 9090
+
+# Per-pod PersistentVolumeClaim holding the WAL + snapshots. Retained across
+# reschedules so a pod rejoins with its history instead of as a blank node.
+persistence:
+  size: 256Mi
+  # "" => the cluster's default StorageClass. Pin it for reproducibility.
+  storageClassName: ""
+
+# Container resource requests/limits. Empty by default (parity with the raw
+# manifest); set per-environment. A consensus voter is latency-sensitive, so
+# CPU throttling shows up directly as election/commit latency — sized rationale
+# is M7's job.
+resources: {}
+  # requests:
+  #   cpu: 100m
+  #   memory: 64Mi
+  # limits:
+  #   cpu: 500m
+  #   memory: 128Mi
+
+# The binary traps SIGTERM and steps down (graceful leader handoff), so a short
+# grace period is enough.
+terminationGracePeriodSeconds: 10
+
+# Pod-level security context. distroless :nonroot is uid/gid 65532; fsGroup
+# chowns the mounted PVC so the non-root uid can write it.
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+# Probes map to the Raft transport: the raft port being up means the process is
+# alive; the client port being up means it is serving. (Richer Raft-state-aware
+# liveness/readiness/startup probes are M7.)
+livenessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  initialDelaySeconds: 2
+  periodSeconds: 5
+
+# Override the generated resource names. Empty => the chart's fullname helper
+# (release name, collapsing to "raft-kv" for a release also named raft-kv).
+nameOverride: ""
+fullnameOverride: ""
