@@ -12,7 +12,8 @@ import (
 )
 
 type State int
-//like num and iota starts at 0 and increments automatically.
+
+// like num and iota starts at 0 and increments automatically.
 const (
 	Follower State = iota
 	Candidate
@@ -34,13 +35,13 @@ type Raft struct {
 	votedFor    string // nodeID we voted for in current term ("" if none)
 
 	// Volatile state
-	state State  // Follower, Candidate, or Leader
-	id    string // this node's ID
+	state State    // Follower, Candidate, or Leader
+	id    string   // this node's ID
 	peers []string // other nodes' addresses
 
 	// Election
-	electionTimer  *time.Timer // fires when election timeout expires
-	votesReceived  int         // count of votes when candidate
+	electionTimer *time.Timer // fires when election timeout expires
+	votesReceived int         // count of votes when candidate
 
 	// Heartbeat (leader only)
 	heartbeatTimer *time.Timer // fires to send heartbeats to followers
@@ -62,9 +63,9 @@ type Raft struct {
 	// Channel to send committed commands to application
 	applyCh chan ApplyMsg
 	// Persistence
-    persistentLog *log.Log  // persistent storage for log entries
-    statePath     string    // path to state file (term/votedFor)
-    snapshotPath  string    // path to snapshot file
+	persistentLog *log.Log // persistent storage for log entries
+	statePath     string   // path to state file (term/votedFor)
+	snapshotPath  string   // path to snapshot file
 
 	// Snapshot metadata
 	// Think of it like a bank account:
@@ -175,7 +176,8 @@ func (r *Raft) resetElectionTimer() {
 		r.startElection()
 	})
 }
-//idea of lock for goroutines 
+
+// idea of lock for goroutines
 // startElection is called when election timeout fires
 // Follower becomes Candidate and asks everyone for votes
 func (r *Raft) startElection() {
@@ -215,15 +217,15 @@ func (r *Raft) sendRequestVote(peer string) {
 
 	//calculate last log index and term
 	lastLogIndex := len(r.log)
-    lastLogTerm := 0
-    if lastLogIndex > 0 {
-        lastLogTerm = r.log[lastLogIndex-1].Term
-    }
+	lastLogTerm := 0
+	if lastLogIndex > 0 {
+		lastLogTerm = r.log[lastLogIndex-1].Term
+	}
 	args := RequestVoteArgs{
-		Term:        r.currentTerm,
-		CandidateID: r.id,
+		Term:         r.currentTerm,
+		CandidateID:  r.id,
 		LastLogIndex: lastLogIndex,
-		LastLogTerm:  lastLogTerm, 
+		LastLogTerm:  lastLogTerm,
 	}
 	r.mu.Unlock()
 
@@ -531,8 +533,8 @@ func (r *Raft) applyCommitted() {
 
 // RequestVoteArgs is what a candidate sends when asking for votes
 type RequestVoteArgs struct {
-	Term        int    // candidate's term
-	CandidateID string // who is asking for vote
+	Term         int    // candidate's term
+	CandidateID  string // who is asking for vote
 	LastLogIndex int
 	LastLogTerm  int
 }
@@ -541,7 +543,7 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	Term        int  // responder's current term (so candidate can update if behind)
 	VoteGranted bool // true = you got my vote
-	
+
 }
 
 // RequestVote handles incoming vote requests from candidates
@@ -561,10 +563,10 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// Rule 2: If candidate's term > my term, update my term and become follower
 	if args.Term > r.currentTerm {
-		r.currentTerm = args.Term  // update to their term
-		r.state = Follower         // step down
-		r.votedFor = ""            // new term = can vote again
-		r.persist() // save term and vote to disk
+		r.currentTerm = args.Term // update to their term
+		r.state = Follower        // step down
+		r.votedFor = ""           // new term = can vote again
+		r.persist()               // save term and vote to disk
 	}
 	// Get my last log info
 	myLastLogIndex := len(r.log)
@@ -702,8 +704,9 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 // Called when follower is too far behind to catch up via log entries
 //
 // Flow:
-//   Leader: "You're at index 5000, but I compacted up to 900000. Here's my snapshot."
-//   Follower: Replaces entire state with snapshot, discards old log
+//
+//	Leader: "You're at index 5000, but I compacted up to 900000. Here's my snapshot."
+//	Follower: Replaces entire state with snapshot, discards old log
 func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -781,13 +784,13 @@ func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshot
 
 // RPCMessage wraps all RPC requests
 type RPCMessage struct {
-    Type string
-    Data json.RawMessage
+	Type string
+	Data json.RawMessage
 }
 
 // RPCResponse wraps all RPC responses
 type RPCResponse struct {
-    Data json.RawMessage
+	Data json.RawMessage
 }
 
 // StartRPCServer starts listening for incoming RPCs from other nodes
@@ -899,6 +902,7 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 
 	return true
 }
+
 // LogEntry represents one entry in the Raft log
 type LogEntry struct {
 	Term    int    // term when entry was received by leader
@@ -919,10 +923,11 @@ const (
 // ConfigChange represents a cluster membership change
 // Only ONE server can be added/removed at a time (single-server changes)
 type ConfigChange struct {
-	Type      ConfigChangeType // add or remove
-	ServerID  string           // the server being added/removed
-	ServerAddr string          // network address (for AddServer)
+	Type       ConfigChangeType // add or remove
+	ServerID   string           // the server being added/removed
+	ServerAddr string           // network address (for AddServer)
 }
+
 // AppendCommand adds a new command to the leader's log.
 // Returns the index where stored, the term, and whether this node is the leader.
 // If not leader, client should retry with another node.
@@ -1162,11 +1167,11 @@ func (r *Raft) LeaderID() string {
 // Solution: Before reading, confirm we're still leader by contacting majority.
 //
 // Flow:
-//   1. Record current commitIndex
-//   2. Send heartbeat to all peers
-//   3. Wait for majority to respond (confirms we're still leader)
-//   4. Wait until state machine has applied up to commitIndex
-//   5. Return success - caller can now safely read from state machine
+//  1. Record current commitIndex
+//  2. Send heartbeat to all peers
+//  3. Wait for majority to respond (confirms we're still leader)
+//  4. Wait until state machine has applied up to commitIndex
+//  5. Return success - caller can now safely read from state machine
 //
 // Returns:
 //   - readIndex: the commit index at which read is safe
@@ -1325,4 +1330,3 @@ func (r *Raft) getLogIndex(sliceIndex int) int {
 func (r *Raft) getSliceIndex(logIndex int) int {
 	return logIndex - r.lastIncludedIndex - 1
 }
-
