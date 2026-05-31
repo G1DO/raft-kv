@@ -1,0 +1,44 @@
+name: go
+
+# Runs the Go checks the project documents (gofmt, go vet, go test) on every
+# PR and every push to main. The race detector is on by design: this is a
+# Raft consensus implementation, so data races are the bugs that matter most.
+#
+# Go is pinned to the version in go.mod (go-version-file) so the CI and local
+# toolchains can't drift. There is no go.sum (zero third-party deps), so the
+# setup-go dependency cache is disabled — there is nothing to cache.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - ".github/workflows/go.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - ".github/workflows/go.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::These files are not gofmt'd. Run: gofmt -w ."
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race ./...
