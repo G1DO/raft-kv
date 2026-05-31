@@ -1,0 +1,53 @@
+name: helm
+
+# Lints and validates the Helm chart on any change under deploy/helm/. Two layers:
+#   1. helm lint --strict   — chart structure + template parse; warnings are errors.
+#   2. render + kubeconform — render the chart at several replica counts and
+#      validate the output against the Kubernetes schema. The chart's whole point
+#      is the replicaCount-driven --peers list (templates/_helpers.tpl "raft-kv.peers"),
+#      so we render at N=1/3/5 to exercise that range, and kubeconform -strict
+#      catches manifests that parse but are not valid Kubernetes.
+#
+# Helm is pinned to the version the chart was verified with (see docs); kubeconform
+# is pinned by release. Actions use current majors (Node 24) — go.yml/diagrams.yml
+# still pin @v4 and can be bumped separately.
+
+on:
+  pull_request:
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/helm.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/helm/**"
+      - ".github/workflows/helm.yml"
+
+env:
+  CHART: deploy/helm/raft-kv
+  KUBECONFORM_VERSION: v0.7.0
+  KUBERNETES_VERSION: "1.31.0"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/setup-helm@v5
+        with:
+          version: v4.2.0
+      - name: helm lint
+        run: helm lint --strict "$CHART"
+      - name: Install kubeconform
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+      - name: Render + validate at N=1,3,5
+        run: |
+          for n in 1 3 5; do
+            echo "::group::replicaCount=$n"
+            helm template rk "$CHART" --set replicaCount="$n" \
+              | kubeconform -strict -summary -kubernetes-version "$KUBERNETES_VERSION"
+            echo "::endgroup::"
+          done
