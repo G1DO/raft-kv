@@ -106,7 +106,6 @@ func (s *KVStore) executeOp(op string) string {
 	}
 }
 
-
 // Snapshot serializes the entire KVStore state to bytes.
 // This includes data AND duplicate detection state.
 func (s *KVStore) Snapshot() ([]byte, error) {

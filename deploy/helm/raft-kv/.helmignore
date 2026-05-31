@@ -1,0 +1,9 @@
+# Patterns to ignore when packaging the chart (helm package / helm install).
+.git/
+.gitignore
+*.tmproj
+.vscode/
+.idea/
+*.bak
+*.orig
+*~

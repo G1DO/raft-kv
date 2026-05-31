@@ -148,7 +148,7 @@ func TestRequestVote_GrantsIfAlreadyVotedForSame(t *testing.T) {
 	r.votedFor = "node2" // already voted for node2
 
 	args := &RequestVoteArgs{
-		Term:        2, // same term
+		Term:        2,       // same term
 		CandidateID: "node2", // same candidate
 	}
 	reply := &RequestVoteReply{}
