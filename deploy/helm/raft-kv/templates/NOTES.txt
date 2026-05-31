@@ -1,0 +1,15 @@
+raft-kv {{ .Chart.AppVersion }} — a {{ .Values.replicaCount }}-node Raft cluster.
+
+StatefulSet/{{ include "raft-kv.fullname" . }} is rolling out. Watch it come up:
+
+  kubectl rollout status statefulset/{{ include "raft-kv.fullname" . }}
+  kubectl get pods -l app={{ include "raft-kv.name" . }} -o wide
+  kubectl logs {{ include "raft-kv.fullname" . }}-0     # elections / replication
+
+Talk to it (client KV text protocol):
+
+  kubectl port-forward pod/{{ include "raft-kv.fullname" . }}-0 {{ .Values.ports.client }}:{{ .Values.ports.client }}
+  # then, in another shell:  printf 'PUT k v\nGET k\n' | nc localhost {{ .Values.ports.client }}
+
+Every pod is wired with the whole-cluster peer list:
+  {{ include "raft-kv.peers" . }}
