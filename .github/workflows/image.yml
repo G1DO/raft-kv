@@ -31,6 +31,9 @@ jobs:
     permissions:
       contents: read
       packages: write # push to GHCR via GITHUB_TOKEN; no PAT needed
+      id-token: write # OIDC token exchanged for a short-lived Fulcio signing cert (keyless)
+      attestations: write # persist the provenance + SBOM attestations
+      artifact-metadata: write # create the attestation storage record (required with push-to-registry)
     steps:
       - uses: actions/checkout@v6
 
@@ -69,12 +72,59 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Provenance/SBOM are produced deliberately in a later step (GitHub
-          # attestation), not via BuildKit's default inline provenance — which
-          # would add a confusing unknown/unknown manifest entry.
+          # Provenance/SBOM are produced deliberately in the attest steps below
+          # (GitHub attestation), not via BuildKit's default inline provenance —
+          # which would add a confusing unknown/unknown manifest entry.
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The steps below sign and attest the image we just pushed, addressing it
+      # BY DIGEST (steps.build.outputs.digest) so they bind to this exact build,
+      # not a moving tag. All are gated to non-PR events — a PR builds but never
+      # signs. Keyless throughout: the job's OIDC token (id-token: write) is
+      # exchanged for a short-lived Fulcio cert and recorded in Rekor; no keys.
+
+      # Pin the cosign version so the signature format matches what the README's
+      # `cosign verify` documents — an unpinned installer can roll the default
+      # forward to a release whose signatures an older verifier can't read.
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v4
+        with:
+          cosign-release: v3.0.6
+
+      # Signature is stored next to the image in GHCR, reusing the login above.
+      - name: Sign image (keyless)
+        if: github.event_name != 'pull_request'
+        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+
+      # SLSA provenance: a signed record of how/where this image was built.
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # SPDX SBOM of the pushed image (pulled by digest from GHCR — needs the login above).
+      - name: Generate SBOM
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Attest SBOM
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
 
       - name: Summary
         if: github.event_name != 'pull_request'
