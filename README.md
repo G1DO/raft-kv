@@ -364,6 +364,79 @@ gracefully on SIGINT/SIGTERM (step down, close listener).
 
 ---
 
+## Verifying the published image
+
+CI builds a distroless image and publishes it to
+[`ghcr.io/g1do/raft-kv`](https://github.com/G1DO/raft-kv/pkgs/container/raft-kv) on every
+push to `main` and every `v*` tag. Each published image is **signed** with
+[cosign](https://github.com/sigstore/cosign) and carries a **SLSA build-provenance** and an
+**SPDX SBOM** attestation. All three are *keyless*: GitHub mints a short-lived OIDC token,
+Fulcio issues a ~10-minute signing certificate from it, and the result is recorded in the
+Rekor transparency log — no private keys, no repository secrets.
+
+Everything binds to the image **digest**, not a tag, so resolve a tag to its digest first
+and verify against that:
+
+```bash
+# Resolve a tag to its immutable digest reference.
+REF="ghcr.io/g1do/raft-kv@$(crane digest ghcr.io/g1do/raft-kv:main)"
+# Without crane:
+# REF="ghcr.io/g1do/raft-kv@$(docker buildx imagetools inspect ghcr.io/g1do/raft-kv:main --format '{{.Manifest.Digest}}')"
+echo "$REF"
+```
+
+### Signature (cosign)
+
+Requires **cosign v3+** (CI signs with v3.0.6):
+
+```bash
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/G1DO/raft-kv/\.github/workflows/image\.yml@' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "$REF"
+```
+
+The identity regexp pins the signature to **this repo's `image.yml` workflow**, and the
+issuer to GitHub's OIDC endpoint that Fulcio validates — a signature from any other
+workflow, repo, or issuer fails. Only `main` and `v*` tags ever sign (PRs build but never
+push), so a valid signature comes from a release run.
+
+### Build provenance (gh)
+
+```bash
+gh attestation verify "oci://$REF" \
+  --repo G1DO/raft-kv \
+  --signer-workflow G1DO/raft-kv/.github/workflows/image.yml
+```
+
+`gh attestation verify` defaults to the SLSA provenance predicate
+(`https://slsa.dev/provenance/v1`), so this checks the provenance. `--signer-workflow`
+enforces that *this* workflow produced it — `--repo` alone would accept an attestation
+from any workflow in the repo.
+
+### SBOM (gh)
+
+The image also carries an SPDX SBOM attestation; verify it by selecting the SBOM predicate
+type:
+
+```bash
+gh attestation verify "oci://$REF" \
+  --repo G1DO/raft-kv \
+  --signer-workflow G1DO/raft-kv/.github/workflows/image.yml \
+  --predicate-type "$SPDX_URI"
+```
+
+> The exact SPDX predicate URI that `actions/attest-sbom` emits is version-specific
+> (e.g. `https://spdx.dev/Document` vs `…/Document/v2.3`). Read it off a real attestation
+> after the first publish and pin it:
+> `gh attestation verify "oci://$REF" --repo G1DO/raft-kv --format json | jq -r '.[].verificationResult.statement.predicateType'`.
+
+Because the runtime image is a single static Go binary on `distroless/static` with no
+third-party Go dependencies, the SBOM is intentionally tiny — the Go toolchain/stdlib
+(read from the binary's embedded build info) plus the few distroless base packages.
+
+---
+
 ## Testing
 
 ```bash
