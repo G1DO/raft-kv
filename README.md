@@ -426,9 +426,9 @@ gh attestation verify "oci://$REF" \
   --predicate-type "$SPDX_URI"
 ```
 
-> `actions/attest-sbom@v4` currently emits the SPDX predicate type `https://spdx.dev/Document`
-> — set `SPDX_URI` to that. The exact URI is version-specific (e.g. `…/Document` vs
-> `…/Document/v2.3`), so confirm it against a real attestation after the first publish. Note
+> `actions/attest-sbom@v4` emits the SPDX predicate type `https://spdx.dev/Document/v2.3`
+> (read off the published attestation) — set `SPDX_URI` to that. The exact URI is
+> version-specific, so re-confirm it against a real attestation if you bump `attest-sbom`. Note
 > that `gh attestation verify` always filters to a single predicate (provenance by default), so
 > it can't be used to *discover* the SBOM predicate — you must pass `--predicate-type` with the
 > value above.
