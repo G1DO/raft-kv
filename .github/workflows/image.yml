@@ -90,7 +90,7 @@ jobs:
       # forward to a release whose signatures an older verifier can't read.
       - name: Install cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v4.1.2 # no floating v4 tag upstream (only v4.x.y) — pin the patch
         with:
           cosign-release: v3.0.6
 

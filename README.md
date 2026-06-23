@@ -426,10 +426,12 @@ gh attestation verify "oci://$REF" \
   --predicate-type "$SPDX_URI"
 ```
 
-> The exact SPDX predicate URI that `actions/attest-sbom` emits is version-specific
-> (e.g. `https://spdx.dev/Document` vs `…/Document/v2.3`). Read it off a real attestation
-> after the first publish and pin it:
-> `gh attestation verify "oci://$REF" --repo G1DO/raft-kv --format json | jq -r '.[].verificationResult.statement.predicateType'`.
+> `actions/attest-sbom@v4` currently emits the SPDX predicate type `https://spdx.dev/Document`
+> — set `SPDX_URI` to that. The exact URI is version-specific (e.g. `…/Document` vs
+> `…/Document/v2.3`), so confirm it against a real attestation after the first publish. Note
+> that `gh attestation verify` always filters to a single predicate (provenance by default), so
+> it can't be used to *discover* the SBOM predicate — you must pass `--predicate-type` with the
+> value above.
 
 Because the runtime image is a single static Go binary on `distroless/static` with no
 third-party Go dependencies, the SBOM is intentionally tiny — the Go toolchain/stdlib
