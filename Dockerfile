@@ -1,9 +1,12 @@
 # syntax=docker/dockerfile:1
 
 # ---- build stage ----------------------------------------------------------
-# Pinned to the toolchain in go.mod (go 1.25.1). Debian-based; used only to
-# compile — nothing from it ships in the final image.
-FROM golang:1.25.1 AS build
+# Pinned to the toolchain in go.mod (go 1.25.11). Debian-based; used only to
+# compile — nothing from it ships in the final image. Kept current with Go's
+# security patch releases: the stdlib version is baked into the binary, so a
+# stale toolchain is exactly what the Trivy gate (.github/workflows/trivy.yml)
+# flags.
+FROM golang:1.25.11 AS build
 
 WORKDIR /src
 

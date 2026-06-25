@@ -1,0 +1,72 @@
+name: trivy
+
+# Scans the container image for KNOWN-FIXABLE HIGH/CRITICAL vulnerabilities and
+# FAILS the build on any finding. This is a supply-chain gate, not a report: it
+# runs on PRs (before merge) and on the same push + tag events image.yml
+# publishes on, so every image that reaches the registry is also scanned. The
+# scan reports independently — making it BLOCK a merge/publish needs a required-
+# check branch-protection rule on `trivy / scan`.
+#
+# It builds the image LOCALLY (load, no push) and scans that exact build rather
+# than pulling a published tag — so the gate works on PRs, which never push. The
+# build uses the same Dockerfile and context as image.yml, so it carries the same
+# package set (base tags float, so it is not pinned to the published digest).
+#
+# Why these inputs:
+#   severity HIGH,CRITICAL  — don't block on LOW/MEDIUM noise.
+#   ignore-unfixed          — only fail on CVEs that HAVE a fix. An unfixable CVE
+#                             in a base image isn't actionable here and would
+#                             wedge CI on something out of our control.
+#   scanners vuln           — CVEs only; secret scanning is gitleaks' job.
+#
+# trivy-action is pinned BY COMMIT SHA, not a tag: the action's tags were
+# hijacked in a March 2026 supply-chain attack (<=0.34.2). A SHA can't be moved.
+
+on:
+  pull_request:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/trivy.yml"
+  # No path filter on push, matching image.yml: a tag release must be scanned
+  # regardless of which files changed, and GitHub can't reliably mix tags with
+  # paths. These are exactly the events image.yml publishes on.
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Build into the local docker daemon (load) — never pushed. A fixed local
+      # tag is all Trivy needs to address the image. provenance:false keeps an
+      # extra unknown/unknown attestation manifest out of the loaded image, the
+      # same way image.yml does.
+      - name: Build image (local, not pushed)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: raft-kv:scan
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy image scan (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: raft-kv:scan
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          scanners: vuln
+          exit-code: "1"
+          format: table
