@@ -1,0 +1,65 @@
+# Argo CD Application: the GitOps source of truth for raft-kv.
+#
+# This object declares "reconcile the raft-kv Helm chart from this repo into the
+# cluster, automatically." Argo polls the repo, renders deploy/helm/raft-kv, and
+# applies the result; prune + selfHeal keep the live cluster equal to git.
+#
+# Layout rationale (monorepo, chart + code in one repo): docs/decisions/ADR-005.
+#
+# Bootstrap once with: kubectl apply -f deploy/argo/application.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: raft-kv
+  # The Application object itself lives in Argo's namespace, NOT in the namespace
+  # it deploys into (that is spec.destination.namespace below).
+  namespace: argocd
+  finalizers:
+    # Deleting this Application also prunes everything it deployed (cascade),
+    # instead of orphaning the StatefulSet + Service in the cluster.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # Uppercase G1DO: GitHub org/repo casing (verified against Chart.yaml + README).
+    repoURL: https://github.com/G1DO/raft-kv
+    targetRevision: main
+    # Argo auto-detects this is a Helm chart from the Chart.yaml at this path.
+    path: deploy/helm/raft-kv
+    helm:
+      # Pin the release name so raft-kv.fullname (and thus the pod DNS names baked
+      # into --peers) stays stable regardless of this Application's name.
+      releaseName: raft-kv
+      parameters:
+        # Lowercase g1do: OCI registries require a lowercase path (verified against
+        # image.yml). Deploy the signed image from the supply-chain pipeline.
+        - name: image.repository
+          value: ghcr.io/g1do/raft-kv
+        # Immutable, content-addressed tag (published by image.yml on push to main).
+        # This is the GitOps rollout knob: bump this value in git and Argo rolls it out.
+        - name: image.tag
+          value: sha-07fd681
+        # The tag is immutable, so there is never a reason to re-pull it.
+        - name: image.pullPolicy
+          value: IfNotPresent
+  destination:
+    server: https://kubernetes.default.svc
+    # The chart hardcodes no namespace; every rendered object lands here.
+    namespace: raft-kv
+  syncPolicy:
+    automated:
+      prune: true      # delete resources removed from git
+      selfHeal: true   # revert out-of-band live edits back to the git-declared state
+    syncOptions:
+      # The chart sets no namespace, so let Argo create it on first sync.
+      - CreateNamespace=true
+      # Let the API server own defaulted fields (the chart ships resources: {} and a
+      # headless Service that accretes defaults). Without this they flap as OutOfSync
+      # under client-side diffing and selfHeal fights them forever.
+      - ServerSideApply=true
+  # KNOWN LIMITATION: a StatefulSet's volumeClaimTemplates is immutable. Changing
+  # persistence.size or persistence.storageClassName in the chart makes the rendered
+  # manifest diverge, and the resulting sync is rejected by the API server rather than
+  # applied. This is deliberately NOT mitigated with Replace=true here, because Replace
+  # recreates the StatefulSet (and all pods) on any chart change, which is too
+  # disruptive for a consensus group. Treat storage changes as a manual operation.
