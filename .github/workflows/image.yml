@@ -94,18 +94,20 @@ jobs:
         with:
           cosign-release: v3.0.6
 
-      # Sign keyless, by digest, reusing the login above — in BOTH cosign formats:
-      #  1. the modern Sigstore bundle (cosign v3 default, --new-bundle-format=true),
-      #     stored via the OCI referrers API and read by `cosign verify`;
-      #  2. a legacy `sha256-<digest>.sig` tag (--new-bundle-format=false) so admission
-      #     controllers can verify the signature too. sigstore policy-controller (and
-      #     Kyverno) do not yet verify bundle-format *signatures* — only bundle
-      #     attestations — so the in-cluster gate (deploy/policy/, ADR-006) relies on
-      #     this legacy signature. Drop step 2 once that upstream support lands.
+      # Sign keyless, by digest, reusing the login above — in BOTH cosign formats.
+      # --new-bundle-format must be set EXPLICITLY: cosign v3's signing config rejects a
+      # bare `cosign sign` with "must provide --new-bundle-format or --bundle ... with
+      # --signing-config". So both calls pass it:
+      #  1. =true  -> the modern Sigstore bundle (OCI referrers), read by `cosign verify`;
+      #  2. =false -> a legacy `sha256-<digest>.sig` tag, so admission controllers can verify
+      #     the signature too. sigstore policy-controller (and Kyverno) do not yet verify
+      #     bundle-format *signatures* — only attestations — so the in-cluster gate
+      #     (deploy/policy/, ADR-006) relies on this legacy signature. Drop step 2 once that
+      #     upstream support lands.
       - name: Sign image (keyless, both formats)
         if: github.event_name != 'pull_request'
         run: |
-          cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+          cosign sign --yes --new-bundle-format=true "${IMAGE}@${{ steps.build.outputs.digest }}"
           cosign sign --yes --new-bundle-format=false "${IMAGE}@${{ steps.build.outputs.digest }}"
 
       # SLSA provenance: a signed record of how/where this image was built.
