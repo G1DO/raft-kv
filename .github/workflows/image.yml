@@ -95,20 +95,21 @@ jobs:
           cosign-release: v3.0.6
 
       # Sign keyless, by digest, reusing the login above — in BOTH cosign formats.
-      # --new-bundle-format must be set EXPLICITLY: cosign v3's signing config rejects a
-      # bare `cosign sign` with "must provide --new-bundle-format or --bundle ... with
-      # --signing-config". So both calls pass it:
-      #  1. =true  -> the modern Sigstore bundle (OCI referrers), read by `cosign verify`;
-      #  2. =false -> a legacy `sha256-<digest>.sig` tag, so admission controllers can verify
-      #     the signature too. sigstore policy-controller (and Kyverno) do not yet verify
-      #     bundle-format *signatures* — only attestations — so the in-cluster gate
-      #     (deploy/policy/, ADR-006) relies on this legacy signature. Drop step 2 once that
-      #     upstream support lands.
+      # --use-signing-config=false: do NOT pull the TUF-provided signing config (cosign v3's
+      #   default). That default broke the OCI sign path on 2026-06-27 ("must provide
+      #   --new-bundle-format or --bundle ... with --signing-config", even with the flag set);
+      #   =false uses cosign's built-in Fulcio/Rekor URLs — the behaviour that worked before.
+      # --new-bundle-format: =true -> modern Sigstore bundle (read by `cosign verify`);
+      #   =false -> a legacy `sha256-<digest>.sig` tag that admission controllers can verify.
+      #   sigstore policy-controller (and Kyverno) do not yet verify bundle-format *signatures*
+      #   — only attestations — so the in-cluster gate (deploy/policy/, ADR-006) relies on the
+      #   legacy one. Drop the legacy call (and --use-signing-config=false) once upstream
+      #   bundle-signature verification lands.
       - name: Sign image (keyless, both formats)
         if: github.event_name != 'pull_request'
         run: |
-          cosign sign --yes --new-bundle-format=true "${IMAGE}@${{ steps.build.outputs.digest }}"
-          cosign sign --yes --new-bundle-format=false "${IMAGE}@${{ steps.build.outputs.digest }}"
+          cosign sign --yes --use-signing-config=false --new-bundle-format=true  "${IMAGE}@${{ steps.build.outputs.digest }}"
+          cosign sign --yes --use-signing-config=false --new-bundle-format=false "${IMAGE}@${{ steps.build.outputs.digest }}"
 
       # SLSA provenance: a signed record of how/where this image was built.
       - name: Attest build provenance
