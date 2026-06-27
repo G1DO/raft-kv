@@ -14,6 +14,14 @@ metadata:
   # The Application object itself lives in Argo's namespace, NOT in the namespace
   # it deploys into (that is spec.destination.namespace below).
   namespace: argocd
+  annotations:
+    # Diff is a SEPARATE path from apply: ServerSideApply (below) makes the *write*
+    # server-side, but the *comparison* still defaults to client-side, which flags
+    # API-defaulted StatefulSet fields and pins the app permanently OutOfSync (so
+    # selfHeal re-applies forever). ServerSideDiff runs the comparison as a
+    # server-side dry-run apply, matching the real apply — without it this app never
+    # reaches Synced. (Requires Argo CD >= 2.10.)
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
   finalizers:
     # Deleting this Application also prunes everything it deployed (cascade),
     # instead of orphaning the StatefulSet + Service in the cluster.
@@ -53,9 +61,11 @@ spec:
     syncOptions:
       # The chart sets no namespace, so let Argo create it on first sync.
       - CreateNamespace=true
-      # Let the API server own defaulted fields (the chart ships resources: {} and a
-      # headless Service that accretes defaults). Without this they flap as OutOfSync
-      # under client-side diffing and selfHeal fights them forever.
+      # Apply server-side so the API server owns defaulted fields (the chart ships
+      # resources: {} and a headless Service that accretes defaults) instead of Argo
+      # fighting them on every apply. NOTE: this fixes the *apply*, not the *diff* —
+      # the OutOfSync flapping is cleared by the ServerSideDiff compare-option in
+      # metadata.annotations above, which is the companion to this setting.
       - ServerSideApply=true
   # KNOWN LIMITATION: a StatefulSet's volumeClaimTemplates is immutable. Changing
   # persistence.size or persistence.storageClassName in the chart makes the rendered
