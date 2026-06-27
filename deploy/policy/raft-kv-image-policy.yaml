@@ -1,0 +1,56 @@
+# Admission policy: only images signed by THIS repo's release pipeline may run.
+#
+# This is the in-cluster half of the supply chain. image.yml signs every published
+# image keyless — GitHub mints an OIDC token, Fulcio issues a ~10-minute signing
+# certificate from it, and the signature is recorded in the Rekor transparency log
+# (no private keys, no repository secrets). This ClusterImagePolicy makes the cluster
+# REFUSE to run a raft-kv image unless it carries such a signature whose certificate
+# identity is our image.yml workflow. Swap in an unsigned image, or one signed by any
+# other workflow/repo/issuer, and the API server rejects the pod at admission — which
+# is what turns "we sign our images" from a claim into an enforced control.
+#
+# sigstore policy-controller evaluates this ONLY in namespaces labelled
+#     policy.sigstore.dev/include: "true"
+# so a namespace must opt in before this bites (see deploy/policy/README.md). Images that
+# match NO policy are governed by the controller's no-match-policy, which is "deny" by
+# default — so they are rejected too. The runbook sets it explicitly anyway, to pin that
+# default-deny posture against a chart upgrade that might change it.
+#
+# Why policy-controller and not Kyverno: docs/decisions/ADR-006.
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: raft-kv-signed
+spec:
+  # Lowercase g1do: OCI registry paths must be lowercase (matches image.yml and the
+  # Argo Application's image.repository). The signed image is published here.
+  images:
+    - glob: "ghcr.io/g1do/raft-kv**"
+  authorities:
+    - name: github-actions-keyless
+      # image.yml signs each image keyless in BOTH cosign formats: the modern Sigstore *bundle*
+      # (default, read by `cosign verify`) and a *legacy* `sha256-<digest>.sig` tag
+      # (`--new-bundle-format=false`). We verify the LEGACY one here because policy-controller —
+      # through v0.15.1, verified live 2026-06-27 — implements bundle *attestation* verification
+      # but NOT bundle *signature* verification (it rejects with "bundle support for image
+      # signatures is not yet implemented"). "legacy" is the format admission controllers support
+      # today; drop the legacy sign step in image.yml and flip this to "bundle" once upstream
+      # lands bundle-signature support.
+      #
+      # NOTE: images published BEFORE the dual-signing change carry no legacy `.sig`, so they are
+      # not admitted until re-published. See deploy/policy/README.md.
+      signatureFormat: legacy
+      keyless:
+        # The signing certificate must chain to the PUBLIC Fulcio root.
+        url: https://fulcio.sigstore.dev
+        identities:
+          # Uppercase G1DO: the certificate SAN carries GitHub's org casing — this is the
+          # same identity the README's `cosign verify --certificate-identity-regexp` pins.
+          # Both fields are required: the issuer ties the cert to GitHub's OIDC endpoint
+          # that Fulcio validates, and the subject regexp pins it to THIS repo's image.yml
+          # workflow. A signature from another workflow, repo, or issuer fails to match.
+          - issuer: https://token.actions.githubusercontent.com
+            subjectRegExp: '^https://github.com/G1DO/raft-kv/\.github/workflows/image\.yml@.*$'
+      # Require the signature's inclusion proof in the public Rekor transparency log.
+      ctlog:
+        url: https://rekor.sigstore.dev
