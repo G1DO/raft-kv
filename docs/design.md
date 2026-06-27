@@ -128,6 +128,37 @@ blocking on a lone `raft-kv-0` that cannot reach quorum by itself.
 Validated end-to-end: deleting the leader pod elects a new leader within one
 election timeout and the rescheduled pod rejoins from its PVC with no data loss.
 
+## Supply chain & GitOps
+
+The image and its delivery are part of the design, not an afterthought. The CI
+pipeline (`.github/workflows/`) gates and provenances every release:
+
+- **Quality gates** on every PR and push: `gofmt` + `go vet` + `go test -race`
+  ([go.yml](../.github/workflows/go.yml)); `helm lint` + kubeconform render at
+  N=1/3/5 ([helm.yml](../.github/workflows/helm.yml)); a Trivy `HIGH,CRITICAL`
+  fixable-CVE gate ([trivy.yml](../.github/workflows/trivy.yml)); and full-history
+  secret scanning with gitleaks ([gitleaks.yml](../.github/workflows/gitleaks.yml)).
+- **Build + provenance** ([image.yml](../.github/workflows/image.yml)): the distroless
+  image is published to GHCR and, by digest, **cosign keyless-signed** (GitHub OIDC →
+  Fulcio → Rekor; no private keys) and attested with **SLSA build provenance** and an
+  **SPDX SBOM**. Verification commands are in the
+  [README](../README.md#verifying-the-published-image).
+- **Delivery**: an Argo CD `Application` reconciles the
+  [Helm chart](../deploy/helm/raft-kv) into the cluster — pull-based GitOps with
+  auto-sync, prune, and selfHeal. Monorepo layout and its trade-offs:
+  [ADR-005](decisions/ADR-005-monorepo-vs-config-repo.md).
+- **Admission enforcement**: a sigstore policy-controller
+  [ClusterImagePolicy](../deploy/policy/raft-kv-image-policy.yaml) refuses, in opted-in
+  namespaces, to run an image not signed by this repo's `image.yml` identity — the
+  in-cluster half of "we sign our images." Because admission controllers can't yet verify
+  cosign's bundle-format signatures, `image.yml` dual-signs (bundle + legacy) and the policy
+  verifies the legacy signature. Engine choice and that limitation:
+  [ADR-006](decisions/ADR-006-policy-controller-vs-kyverno.md).
+
+This closes the loop from source to running pod: a change is tested, the image is built,
+scanned, signed, and provenanced; Argo rolls it out declaratively; and admission control
+checks the signature before the kubelet runs it.
+
 ## Known correctness gaps
 
 These are real and deliberate. Listed here so reviewers don't have to find them by reading the code.
@@ -144,6 +175,13 @@ These are real and deliberate. Listed here so reviewers don't have to find them 
 - **Two server paths exist** — the legacy single-node `Server` is still
   wired into the no-flag default and three existing tests. Consolidating
   is parked for later.
+- **The StatefulSet cannot safely reconfigure Raft membership.** The chart sizes
+  the cluster from `replicaCount` and regenerates the static `--peers` list from it,
+  so scaling via Helm/Argo rolling-restarts every pod with a new peer set rather than
+  adding a voter through joint-consensus `AddServer`. Declarative *deploys* are safe;
+  declarative *membership change* is not — driving Raft membership from a StatefulSet is
+  an open limitation flagged in
+  [ADR-005](decisions/ADR-005-monorepo-vs-config-repo.md) and tracked as future work.
 
 ## Trade-offs (full rationale in ADRs)
 

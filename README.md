@@ -439,6 +439,44 @@ third-party Go dependencies, the SBOM is intentionally tiny — the Go toolchain
 
 ---
 
+## GitOps delivery (Argo CD)
+
+The Kubernetes deploy is **declarative and pull-based**: an Argo CD `Application`
+([deploy/argo/application.yaml](deploy/argo/application.yaml)) watches this repo and
+reconciles the [Helm chart](deploy/helm/raft-kv) into the cluster — `automated` sync with
+`prune` + `selfHeal`, so the live cluster is kept equal to git and out-of-band edits are
+reverted. The rollout knob is the image tag in the `Application`: bump it in git, Argo rolls
+it out. Code and chart live in one repo on purpose — monorepo vs. config-repo split is
+[ADR-005](docs/decisions/ADR-005-monorepo-vs-config-repo.md).
+
+Demonstrated end-to-end on kind: `Synced + Healthy`, 3/3 running the signed GHCR image; a
+`kubectl scale` was reverted by selfHeal within seconds, and a `values.yaml` change pushed
+to `main` rolled out on the next sync. One honest limitation: Argo reconciles *Kubernetes
+objects, not Raft membership* — bumping `replicaCount` grows the StatefulSet and regenerates
+`--peers`, rolling-restarting the pods, but the new pods are **not** added as voters through
+joint-consensus `AddServer`. Declarative deploys: yes. Safe consensus reconfiguration: not
+from the chart — flagged in ADR-005 and tracked as future work.
+
+## Admission policy (signature enforcement)
+
+Signing the image only matters if the cluster refuses to run unsigned ones. A
+[sigstore policy-controller](https://docs.sigstore.dev/policy-controller/overview/)
+`ClusterImagePolicy` ([deploy/policy/](deploy/policy/)) pins admission to **this repo's
+keyless signing identity** — issuer `token.actions.githubusercontent.com`, subject
+`…/image.yml@…`, Rekor inclusion required — in any namespace labelled
+`policy.sigstore.dev/include: "true"`. The controller's `no-match-policy` is `deny` by
+default, so unmatched images are rejected too. Why policy-controller over Kyverno:
+[ADR-006](docs/decisions/ADR-006-policy-controller-vs-kyverno.md).
+
+Demonstrated on kind: an unsigned image (`busybox`) is **denied at admission** while
+un-opted-in namespaces stay untouched. One honest caveat — policy-controller (through v0.15.1)
+can't yet verify cosign's modern *bundle*-format signatures (only attestations), so `image.yml`
+**dual-signs** every image (a bundle for `cosign verify` plus a legacy `.sig`) and the policy
+verifies the legacy one; that admit path is config-correct and confirms on the next signed
+publish. Full runbook: [deploy/policy/README.md](deploy/policy/README.md).
+
+---
+
 ## Testing
 
 ```bash
