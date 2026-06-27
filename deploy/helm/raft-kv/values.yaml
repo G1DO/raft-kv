@@ -10,7 +10,7 @@
 # group is NOT a stateless service: more voters do not add throughput, and
 # membership changes are deliberate — treat this as a deploy-time decision, not
 # an autoscale target.
-replicaCount: 5
+replicaCount: 3
 
 image:
   repository: raft-kv
