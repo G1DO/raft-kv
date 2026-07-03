@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 
@@ -11,16 +12,20 @@ import (
 )
 
 type Server struct {
-	log   *log.Log
-	store *kv.KVStore
-	addr  string
+	log    *log.Log
+	store  *kv.KVStore
+	addr   string
+	logger *slog.Logger
 }
 
-func NewServer(addr string, logPath string) (*Server, error) {
+func NewServer(addr string, logPath string, logger *slog.Logger) (*Server, error) {
 	// 1. Create the log
 	l, err := log.NewLog(logPath)
 	if err != nil {
 		return nil, err
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 
 	// 2. Create the KV store
@@ -37,9 +42,10 @@ func NewServer(addr string, logPath string) (*Server, error) {
 
 	// 4. Return the server
 	return &Server{
-		log:   l,
-		store: store,
-		addr:  addr,
+		log:    l,
+		store:  store,
+		addr:   addr,
+		logger: logger,
 	}, nil
 }
 
@@ -53,13 +59,13 @@ func (s *Server) Start() error {
 
 	// Update addr with actual address (useful when using port 0)
 	s.addr = listener.Addr().String()
-	fmt.Printf("Server listening on %s\n", s.addr)
+	s.logger.Info("server_started", "mode", "single-node", "client_addr", s.addr)
 
 	// 2. Loop: accept connections
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Printf("accept error: %v\n", err)
+			s.logger.Warn("accept_failed", "error", err)
 			continue
 		}
 
