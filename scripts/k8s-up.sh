@@ -25,7 +25,7 @@ if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
   echo "==> reusing existing kind cluster '$CLUSTER'"
 else
   echo "==> creating kind cluster '$CLUSTER'"
-  kind create cluster --name "$CLUSTER"
+  kind create cluster --name "$CLUSTER" --config deploy/kind-config.yaml
 fi
 
 echo "==> building image $IMAGE"
