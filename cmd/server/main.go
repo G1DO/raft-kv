@@ -3,11 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/G1DO/raft-kv/internal/server"
 )
@@ -16,65 +19,83 @@ func main() {
 	id := flag.String("id", "", "node id; setting this enables cluster (Raft) mode")
 	addr := flag.String("addr", "localhost:8080", "client KV listen address")
 	raftAddr := flag.String("raft-addr", "", "peer-RPC listen address (cluster mode)")
+	metricsAddr := flag.String("metrics-addr", ":2112", "HTTP metrics/health listen address (cluster mode)")
+	otlpEndpoint := flag.String("otlp-endpoint", "", "OTLP/HTTP trace endpoint as host:port (cluster mode); empty disables tracing")
 	peers := flag.String("peers", "", "other nodes as id@raftAddr@clientAddr, comma-separated")
 	data := flag.String("data", "data", "data directory")
 	flag.Parse()
 
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if *id == "" {
-		runSingleNode(*addr, *data)
+		runSingleNode(*addr, *data, logger)
 		return
 	}
-	runCluster(*id, *addr, *raftAddr, *peers, *data)
+	runCluster(*id, *addr, *raftAddr, *metricsAddr, *otlpEndpoint, *peers, *data, logger)
 }
 
 // runSingleNode is the original flag-less behaviour: a plain single-node KV
 // store over a WAL, no Raft. Kept so `go run ./cmd/server` still works.
-func runSingleNode(addr, dataDir string) {
+func runSingleNode(addr, dataDir string, logger *slog.Logger) {
 	os.MkdirAll(dataDir, 0755)
 	logPath := filepath.Join(dataDir, "raft.log")
 
-	fmt.Println("Starting raft-kv server (single-node, no Raft)...")
-	srv, err := server.NewServer(addr, logPath)
+	logger.Info("starting_server", "mode", "single-node")
+	srv, err := server.NewServer(addr, logPath, logger)
 	if err != nil {
-		fmt.Printf("Failed to create server: %v\n", err)
+		logger.Error("server_create_failed", "error", err)
 		os.Exit(1)
 	}
 	if err := srv.Start(); err != nil {
-		fmt.Printf("Server error: %v\n", err)
+		logger.Error("server_failed", "error", err)
 		os.Exit(1)
 	}
 }
 
 // runCluster wires this node into a Raft cluster and serves clients until a
 // SIGINT/SIGTERM triggers a graceful step-down.
-func runCluster(id, addr, raftAddr, peers, dataDir string) {
+func runCluster(id, addr, raftAddr, metricsAddr, otlpEndpoint, peers, dataDir string, logger *slog.Logger) {
 	if raftAddr == "" {
-		fmt.Println("cluster mode requires --raft-addr")
+		logger.Error("missing_required_flag", "flag", "raft-addr")
 		os.Exit(1)
 	}
 
 	peerAddrs, hints, err := parsePeers(peers, id)
 	if err != nil {
-		fmt.Printf("invalid --peers: %v\n", err)
+		logger.Error("invalid_peers", "error", err)
 		os.Exit(1)
 	}
 	hints[id] = addr // so a follower can hand a client our own address
 
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		fmt.Printf("failed to create data dir: %v\n", err)
+		logger.Error("data_dir_create_failed", "dir", dataDir, "error", err)
 		os.Exit(1)
 	}
 
+	var tracer trace.Tracer
+	if otlpEndpoint != "" {
+		t, stopTracing, err := setupTracing(otlpEndpoint, id, logger)
+		if err != nil {
+			logger.Error("tracing_setup_failed", "endpoint", otlpEndpoint, "error", err)
+			os.Exit(1)
+		}
+		defer stopTracing() // flush buffered spans on graceful shutdown
+		tracer = t
+		logger.Info("tracing_enabled", "node", id, "otlp_endpoint", otlpEndpoint)
+	}
+
 	srv, err := server.NewRaftServer(server.RaftConfig{
-		ID:         id,
-		ClientAddr: addr,
-		RaftAddr:   raftAddr,
-		Peers:      peerAddrs,
-		DataDir:    dataDir,
-		LeaderHint: hints,
+		ID:          id,
+		ClientAddr:  addr,
+		RaftAddr:    raftAddr,
+		MetricsAddr: metricsAddr,
+		Peers:       peerAddrs,
+		DataDir:     dataDir,
+		LeaderHint:  hints,
+		Logger:      logger,
+		Tracer:      tracer,
 	})
 	if err != nil {
-		fmt.Printf("failed to create server: %v\n", err)
+		logger.Error("server_create_failed", "node", id, "error", err)
 		os.Exit(1)
 	}
 
@@ -82,12 +103,12 @@ func runCluster(id, addr, raftAddr, peers, dataDir string) {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		fmt.Printf("\n[%s] shutting down...\n", id)
+		logger.Info("shutting_down", "node", id)
 		srv.Shutdown()
 	}()
 
 	if err := srv.Start(); err != nil {
-		fmt.Printf("server error: %v\n", err)
+		logger.Error("server_failed", "node", id, "error", err)
 		os.Exit(1)
 	}
 }
