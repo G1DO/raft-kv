@@ -1,9 +1,12 @@
 # raft-kv — Design
 
 A small, runnable distributed key-value store built on the Raft consensus
-algorithm. Hand-rolled in Go on the standard library, zero third-party
-dependencies. This document explains what it is, what it deliberately is not,
-how it fails, and the trade-offs that shaped it.
+algorithm. The consensus core — Raft engine, WAL, snapshots, KV state machine,
+RPC transport, metrics registry — is hand-rolled in Go on the standard library
+with zero third-party dependencies; the only external code is the
+OpenTelemetry SDK for trace export at the server edge (ADR-007). This document
+explains what it is, what it deliberately is not, how it fails, and the
+trade-offs that shaped it.
 
 For the rationale behind specific decisions, see the ADRs in
 [decisions/](decisions/). For the gaps an attacker would exploit, see the
@@ -158,6 +161,40 @@ pipeline (`.github/workflows/`) gates and provenances every release:
 This closes the loop from source to running pod: a change is tested, the image is built,
 scanned, signed, and provenanced; Argo rolls it out declaratively; and admission control
 checks the signature before the kubelet runs it.
+
+## Observability
+
+The interesting failure modes of a consensus system are invisible from the outside —
+a stale leader, a widening committed/applied gap, an election storm all look like
+"slow" until the internals are telemetry. M6 instruments them across three signals,
+joined by a per-request trace ID:
+
+- **Metrics** (zero-dep, hand-rolled): `internal/metrics/` implements the Prometheus
+  text exposition format directly — gauges, counters, histograms with explicit
+  buckets — served over stdlib `net/http` on `--metrics-addr` with `/healthz` and
+  `/readyz` (ready = joined cluster, applied caught up to commit). Raft state is set
+  inline at its mutation points (already under `r.mu`, so lock-safe): term, leadership,
+  elections and their duration, commit **and** applied index (the committed≠applied
+  lesson as a gauge pair), log length, snapshot floor, and append→commit latency.
+  The client API gets RED metrics by op and result class.
+- **Logs**: stdlib `log/slog`, JSON to stdout, shipped by Promtail to Loki in the
+  cluster deploy. The events the system used to be silent about — election start/win,
+  step-downs (with reason), snapshot install, membership changes, and `callRPC`
+  transport errors that were flattened to `bool` — are all structured events now.
+- **Traces**: OpenTelemetry spans at the server layer only —
+  `raftkv.request` → `raft.append` → `raft.replicate_commit_apply` (writes) or
+  `raft.read_index` → `raft.apply_wait` (reads) — exported OTLP directly to Tempo when
+  `--otlp-endpoint` is set. The consensus core (`internal/raft`, `internal/log`,
+  `internal/kv`, `internal/metrics`) imports no third-party code; the OTel SDK at the
+  edge is the project's only dependency. Why that line was drawn there:
+  [ADR-007](decisions/ADR-007-otel-vs-zero-dep-tracing.md).
+
+The stack (kube-prometheus-stack, Loki, Promtail, Tempo) is a separate Argo CD
+Application ([deploy/observability](../deploy/observability)) so observability churn
+stays out of the app's deploy history; dashboards (Raft internals, RED, SLO burn rate)
+are committed JSON, loaded by Grafana's sidecar. `scripts/observability-demo.sh`
+reproduces the correlation demo: leader killed under load, one incident visible in
+every signal.
 
 ## Known correctness gaps
 

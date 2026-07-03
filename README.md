@@ -433,9 +433,11 @@ gh attestation verify "oci://$REF" \
 > it can't be used to *discover* the SBOM predicate — you must pass `--predicate-type` with the
 > value above.
 
-Because the runtime image is a single static Go binary on `distroless/static` with no
-third-party Go dependencies, the SBOM is intentionally tiny — the Go toolchain/stdlib
-(read from the binary's embedded build info) plus the few distroless base packages.
+Because the runtime image is a single static Go binary on `distroless/static`, the SBOM
+is intentionally small — the Go toolchain/stdlib (read from the binary's embedded build
+info), the OpenTelemetry modules used for trace export (the project's only third-party
+Go dependencies, see [ADR-007](docs/decisions/ADR-007-otel-vs-zero-dep-tracing.md)),
+plus the few distroless base packages.
 
 ---
 
@@ -474,6 +476,41 @@ can't yet verify cosign's modern *bundle*-format signatures (only attestations),
 **dual-signs** every image (a bundle for `cosign verify` plus a legacy `.sig`) and the policy
 verifies the legacy one; that admit path is config-correct and confirms on the next signed
 publish. Full runbook: [deploy/policy/README.md](deploy/policy/README.md).
+
+---
+
+## Observability
+
+The consensus system's internal state is first-class telemetry, correlated across all
+three signals by a per-request trace ID:
+
+- **Metrics** — a hand-rolled, zero-dependency Prometheus registry
+  (`internal/metrics/`, no `client_golang`) served on `--metrics-addr` (default `:2112`,
+  alongside `/healthz` and `/readyz`). Raft internals are instrumented at their mutation
+  points: `raft_term`, `raft_is_leader`, `raft_elections_total`,
+  `raft_election_duration_seconds`, `raft_commit_index` **and** `raft_applied_index`
+  (committed ≠ applied, made visible), `raft_log_length`, `raft_last_included_index`, and
+  `raft_commit_latency_seconds` — leader-side append→commit time, the live version of the
+  benchmark's p99 number. The client API gets RED metrics:
+  `raftkv_requests_total{op,result}` and `raftkv_request_duration_seconds{op}`.
+- **Logs** — stdlib `log/slog`, JSON to stdout. Elections, step-downs, snapshot installs,
+  membership changes, and previously black-holed `callRPC` transport failures are all
+  logged; every client request carries a `trace_id` across its lines.
+- **Traces** — OpenTelemetry spans at the server layer (`raftkv.request` →
+  `raft.append` → `raft.replicate_commit_apply` / `raft.read_index` → `raft.apply_wait`),
+  exported OTLP straight to Tempo when `--otlp-endpoint` is set (off by default). The
+  OTel SDK is the project's **only third-party dependency**; the consensus core stays
+  stdlib-only — the trade-off is recorded in
+  [ADR-007](docs/decisions/ADR-007-otel-vs-zero-dep-tracing.md). With tracing on, the
+  log `trace_id` *is* the OTel trace ID, so a Loki log line links straight to its Tempo
+  waterfall.
+
+The stack itself (kube-prometheus-stack + Loki + Promtail + Tempo) deploys as a separate
+Argo CD Application from [deploy/observability/](deploy/observability/), with Grafana
+dashboards committed as JSON (Raft internals, client-API RED, write-SLO burn rate).
+`./scripts/observability-demo.sh` runs the repeatable failover demo: kill the leader
+under load and watch the same incident as a leader-timeline flip, an election-counter
+tick, a commit-latency spike, the `election_won` log line, and the slow request's trace.
 
 ---
 
