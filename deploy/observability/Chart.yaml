@@ -1,0 +1,24 @@
+apiVersion: v2
+name: observability
+description: >-
+  Umbrella chart for the raft-kv observability stack: kube-prometheus-stack
+  (Prometheus + Grafana + Alertmanager), Loki + Promtail (logs), and Tempo
+  (traces, fed OTLP directly by the raft-kv binary — no separate Collector).
+  Deployed as its OWN Argo CD Application (deploy/argo/observability-app.yaml)
+  so observability churn never bloats the raft-kv app's deploy history
+  (consistent with ADR-005); tracing stance is ADR-007.
+type: application
+version: 0.1.0
+dependencies:
+  - name: kube-prometheus-stack
+    version: 87.5.1
+    repository: https://prometheus-community.github.io/helm-charts
+  - name: loki
+    version: 7.0.0
+    repository: https://grafana.github.io/helm-charts
+  - name: promtail
+    version: 6.17.1
+    repository: https://grafana.github.io/helm-charts
+  - name: tempo
+    version: 1.24.4
+    repository: https://grafana.github.io/helm-charts

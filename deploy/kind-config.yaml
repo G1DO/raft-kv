@@ -1,0 +1,26 @@
+# kind cluster config for raft-kv + the observability stack (M6).
+#
+# NOTE ON SIZING: a kind "node" is a docker container that is NOT resource-capped
+# by default — it already shares the full host CPU/memory. What a full
+# kube-prometheus-stack + Loki + Tempo deployment actually needs from this config
+# is (a) a reproducible cluster shape and (b) stable host ports for the UIs, so
+# the demo works without a wall of `kubectl port-forward`s.
+#
+# Used by scripts/k8s-up.sh at cluster CREATION time only — changing this file
+# does not affect an existing cluster (kind clusters are immutable; recreate to
+# apply: ./scripts/k8s-down.sh && ./scripts/k8s-up.sh).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: raft-kv
+nodes:
+  - role: control-plane
+    # Map fixed NodePorts to host ports so the observability UIs are reachable
+    # at localhost without port-forwarding. The observability chart pins the
+    # matching nodePort values (deploy/observability/values.yaml).
+    extraPortMappings:
+      - containerPort: 30300 # Grafana
+        hostPort: 3000
+        protocol: TCP
+      - containerPort: 30900 # Prometheus
+        hostPort: 9091      # host 9090 collides with raft RPC in local runs
+        protocol: TCP

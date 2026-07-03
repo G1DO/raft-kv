@@ -1,0 +1,19 @@
+{{- /*
+Grafana dashboards, committed as JSON under dashboards/ and mounted via the
+kube-prometheus-stack Grafana sidecar: any ConfigMap labeled
+grafana_dashboard=1 is auto-loaded (and hot-reloaded on change), so a
+dashboard edit is a git commit + sync, never a click-path in the UI.
+One ConfigMap per file keeps each under the 1MiB ConfigMap limit.
+*/ -}}
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-{{ base $path | trimSuffix ".json" | kebabcase }}
+  labels:
+    grafana_dashboard: "1"
+data:
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+---
+{{- end }}
