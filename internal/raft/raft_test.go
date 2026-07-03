@@ -19,7 +19,7 @@ func newTestRaft(t *testing.T, id string, peers []string, applyCh chan ApplyMsg)
 	statePath := fmt.Sprintf("%s/%s.state", tempDir, id)
 	snapshotPath := fmt.Sprintf("%s/%s.snapshot", tempDir, id)
 
-	r := NewRaft(id, peers, applyCh, logPath, statePath, snapshotPath)
+	r := NewRaft(id, peers, applyCh, logPath, statePath, snapshotPath, nil, nil)
 
 	// Register cleanup: Stop halts any timers/listener so they don't fire after
 	// the test returns and race with another test's reads of the same fields.
@@ -712,11 +712,11 @@ func TestPersistence_TermIsSaved(t *testing.T) {
 	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node, start election (increments term)
-	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
+	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath, nil, nil)
 	r1.startElection() // term becomes 1
 
 	// Create new node with same paths - should restore state
-	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
+	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath, nil, nil)
 
 	if r2.currentTerm != 1 {
 		t.Errorf("expected restored term=1, got %d", r2.currentTerm)
@@ -733,11 +733,11 @@ func TestPersistence_VotedForIsSaved(t *testing.T) {
 	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node, start election (votes for self)
-	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
+	r1 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath, nil, nil)
 	r1.startElection() // votes for node1
 
 	// Create new node with same paths - should restore state
-	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath)
+	r2 := NewRaft("node1", []string{"node2"}, nil, logPath, statePath, snapshotPath, nil, nil)
 
 	if r2.votedFor != "node1" {
 		t.Errorf("expected restored votedFor=node1, got %s", r2.votedFor)
@@ -754,14 +754,14 @@ func TestPersistence_LogEntriesAreSaved(t *testing.T) {
 	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create leader and append entries
-	r1 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
+	r1 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath, nil, nil)
 	r1.state = Leader
 	r1.currentTerm = 1
 	r1.AppendCommand([]byte("PUT foo bar"))
 	r1.AppendCommand([]byte("PUT baz qux"))
 
 	// Create new node with same paths - should restore log
-	r2 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
+	r2 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath, nil, nil)
 
 	if len(r2.log) != 2 {
 		t.Errorf("expected 2 log entries, got %d", len(r2.log))
@@ -784,7 +784,7 @@ func TestPersistence_FreshStart(t *testing.T) {
 	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node - no existing files
-	r := NewRaft("node1", []string{}, nil, logPath, statePath, snapshotPath)
+	r := NewRaft("node1", []string{}, nil, logPath, statePath, snapshotPath, nil, nil)
 
 	if r.currentTerm != 0 {
 		t.Errorf("expected term=0 on fresh start, got %d", r.currentTerm)
@@ -885,7 +885,7 @@ func TestPersistence_SnapshotIsRestored(t *testing.T) {
 	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create node and add some entries
-	r1 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
+	r1 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath, nil, nil)
 	r1.state = Leader
 	r1.currentTerm = 1
 
@@ -909,7 +909,7 @@ func TestPersistence_SnapshotIsRestored(t *testing.T) {
 	}
 
 	// Create new node with same paths - should restore snapshot
-	r2 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath)
+	r2 := NewRaft("leader", []string{}, nil, logPath, statePath, snapshotPath, nil, nil)
 
 	// Verify snapshot was restored
 	if r2.lastIncludedIndex != 3 {
@@ -1205,7 +1205,7 @@ func TestConfigChange_Persistence(t *testing.T) {
 	snapshotPath := tempDir + "/node.snapshot"
 
 	// Create leader and add a server
-	r1 := NewRaft("leader", []string{"peer1"}, nil, logPath, statePath, snapshotPath)
+	r1 := NewRaft("leader", []string{"peer1"}, nil, logPath, statePath, snapshotPath, nil, nil)
 	r1.state = Leader
 	r1.currentTerm = 1
 	r1.nextIndex = make(map[string]int)
@@ -1219,7 +1219,7 @@ func TestConfigChange_Persistence(t *testing.T) {
 	}
 
 	// Create new node with same paths - should restore config
-	r2 := NewRaft("leader", []string{"peer1"}, nil, logPath, statePath, snapshotPath)
+	r2 := NewRaft("leader", []string{"peer1"}, nil, logPath, statePath, snapshotPath, nil, nil)
 
 	// Config should be restored from log replay
 	peers := r2.GetPeers()
