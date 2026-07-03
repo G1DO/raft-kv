@@ -18,3 +18,6 @@ spec:
     - name: raft
       port: {{ .Values.ports.raft }}
       targetPort: raft
+    - name: metrics
+      port: {{ .Values.ports.metrics }}
+      targetPort: metrics

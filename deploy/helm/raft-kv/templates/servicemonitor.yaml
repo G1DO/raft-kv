@@ -1,0 +1,24 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+# ServiceMonitor — declarative Prometheus scrape discovery (Prometheus Operator
+# CRD, shipped by kube-prometheus-stack in deploy/observability). Prometheus
+# resolves the headless Service's per-pod endpoints, so every Raft member is
+# scraped individually — per-pod raft_is_leader is what makes the
+# leader-over-time panel possible.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "raft-kv.fullname" . }}
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "raft-kv.labels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+{{- end }}

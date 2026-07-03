@@ -17,6 +17,12 @@ spec:
     metadata:
       labels:
         {{- include "raft-kv.labels" . | nindent 8 }}
+      {{- if .Values.metrics.scrapeAnnotations.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.ports.metrics | quote }}
+        prometheus.io/path: /metrics
+      {{- end }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
@@ -36,6 +42,10 @@ spec:
             - --id=$(POD_NAME)
             - --addr=0.0.0.0:{{ .Values.ports.client }}
             - --raft-addr=0.0.0.0:{{ .Values.ports.raft }}
+            - --metrics-addr=0.0.0.0:{{ .Values.ports.metrics }}
+            {{- with .Values.tracing.otlpEndpoint }}
+            - --otlp-endpoint={{ . }}
+            {{- end }}
             - --data=/data
             - --peers={{ include "raft-kv.peers" . }}
           ports:
@@ -43,6 +53,8 @@ spec:
               containerPort: {{ .Values.ports.client }}
             - name: raft
               containerPort: {{ .Values.ports.raft }}
+            - name: metrics
+              containerPort: {{ .Values.ports.metrics }}
           # Raft RPC up => the process is alive; client port up => it is serving.
           livenessProbe:
             tcpSocket:
