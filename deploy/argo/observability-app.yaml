@@ -1,0 +1,47 @@
+# Argo CD Application: the observability stack (Prometheus + Grafana + Loki +
+# Promtail + Tempo) as a SEPARATE Application from raft-kv.
+#
+# Separate on purpose: the stack is big, churns on its own cadence (chart
+# bumps, dashboard edits), and none of that should appear in the raft-kv app's
+# sync history (same isolation reasoning as ADR-005). Tracing stance: ADR-007.
+#
+# Bootstrap once with: kubectl apply -f deploy/argo/observability-app.yaml
+# (Argo runs `helm dependency build` itself from Chart.lock — the subchart
+# .tgz files are not committed.)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability
+  namespace: argocd
+  annotations:
+    # Same rationale as the raft-kv Application: compare with a server-side
+    # dry-run so API-defaulted fields don't pin the app OutOfSync forever.
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/G1DO/raft-kv
+    targetRevision: main
+    path: deploy/observability
+    helm:
+      # Pin the release name: the subchart fullnames are already pinned in
+      # values.yaml, but Helm labels and hook names still derive from this.
+      releaseName: observability
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # kube-prometheus-stack's CRDs blow past the 262KB annotation limit that
+      # client-side apply needs for last-applied-configuration — server-side
+      # apply is REQUIRED here, not just nice-to-have.
+      - ServerSideApply=true
+      # The stack ships CRDs and CRs in one sync wave; skip the dry-run failure
+      # for CRs whose CRD lands in the same sync.
+      - SkipDryRunOnMissingResource=true

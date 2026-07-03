@@ -1,0 +1,125 @@
+# Values for the raft-kv observability umbrella chart, sized for a local kind
+# cluster. Everything is single-replica / filesystem-storage — this is a demo
+# stack, not an HA one.
+#
+# Subchart fullnames are pinned (kps / grafana / loki / tempo) so service DNS
+# names are stable and short regardless of the Helm release or Argo app name —
+# the Grafana datasources and promtail client URL below depend on them.
+
+kube-prometheus-stack:
+  fullnameOverride: kps
+
+  prometheus:
+    service:
+      # NodePort matches deploy/kind-config.yaml's extraPortMapping (host :9091).
+      type: NodePort
+      nodePort: 30900
+    prometheusSpec:
+      # Select EVERY ServiceMonitor in the cluster, not only those labeled with
+      # this Helm release — raft-kv's ServiceMonitor comes from a different
+      # release (the raft-kv chart), so the default release-label selector would
+      # never discover it.
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      retention: 24h
+      resources:
+        requests:
+          cpu: 100m
+          memory: 400Mi
+
+  grafana:
+    fullnameOverride: grafana
+    service:
+      # NodePort matches deploy/kind-config.yaml's extraPortMapping (host :3000).
+      type: NodePort
+      nodePort: 30300
+    # Loki + Tempo alongside the Prometheus datasource kube-prometheus-stack
+    # provisions by itself. The derived field is the correlation demo's glue:
+    # it lifts trace_id out of the app's JSON log lines and links each log line
+    # to its Tempo trace.
+    additionalDataSources:
+      - name: Loki
+        type: loki
+        uid: loki
+        url: http://loki:3100
+        jsonData:
+          derivedFields:
+            - name: trace_id
+              matcherRegex: '"trace_id":"([a-f0-9]+)"'
+              url: '$${__value.raw}'
+              datasourceUid: tempo
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        url: http://tempo:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: '-5m'
+            spanEndTimeShift: '5m'
+            filterByTraceID: true
+
+# Loki in single-binary mode with filesystem storage: one pod, one PVC, no
+# object store, no gateway (Grafana and promtail talk to loki:3100 directly).
+loki:
+  fullnameOverride: loki
+  deploymentMode: SingleBinary
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    storage:
+      type: filesystem
+    schemaConfig:
+      configs:
+        - from: "2024-04-01"
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: loki_index_
+            period: 24h
+  singleBinary:
+    replicas: 1
+    persistence:
+      size: 2Gi
+  # Zero out the scalable-mode deployments the chart would otherwise render.
+  backend:
+    replicas: 0
+  read:
+    replicas: 0
+  write:
+    replicas: 0
+  gateway:
+    enabled: false
+  # Demo-stack trims: no self-monitoring canary, no caches (memory-hungry).
+  lokiCanary:
+    enabled: false
+  test:
+    enabled: false
+  chunksCache:
+    enabled: false
+  resultsCache:
+    enabled: false
+
+# Promtail tails every pod's stdout/stderr on the node and ships it to Loki —
+# this is how the app's slog JSON lines become queryable (and how the trace_id
+# derived field gets something to match on).
+promtail:
+  config:
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+
+# Tempo single-binary. The raft-kv binary exports OTLP/HTTP straight to
+# tempo:4318 (ADR-007) — Tempo's built-in OTLP receiver makes a separate
+# OpenTelemetry Collector pure overhead at this scale.
+tempo:
+  fullnameOverride: tempo
+  tempo:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"

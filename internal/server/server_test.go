@@ -31,7 +31,7 @@ func TestServerPutAndGet(t *testing.T) {
 	defer os.Remove(logPath)
 	os.Remove(logPath)
 
-	srv, err := NewServer(addr, logPath)
+	srv, err := NewServer(addr, logPath, nil)
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestServerDelete(t *testing.T) {
 	defer os.Remove(logPath)
 	os.Remove(logPath)
 
-	srv, err := NewServer(addr, logPath)
+	srv, err := NewServer(addr, logPath, nil)
 	if err != nil {
 		t.Fatalf("NewServer failed: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestServerPersistence(t *testing.T) {
 	os.Remove(logPath)
 
 	// First server: write data
-	srv1, err := NewServer(addr1, logPath)
+	srv1, err := NewServer(addr1, logPath, nil)
 	if err != nil {
 		t.Fatalf("NewServer 1 failed: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestServerPersistence(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Second server: should recover from log
-	srv2, err := NewServer(addr2, logPath)
+	srv2, err := NewServer(addr2, logPath, nil)
 	if err != nil {
 		t.Fatalf("NewServer 2 failed: %v", err)
 	}

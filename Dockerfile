@@ -10,10 +10,11 @@ FROM golang:1.25.11 AS build
 
 WORKDIR /src
 
-# No third-party deps (there is no go.sum), so the module graph is just go.mod.
-# Sources are copied wholesale; the build context is already trimmed by
-# .dockerignore to go.mod + cmd/ + internal/.
-COPY go.mod ./
+# Module files first so the dependency download layer caches independently of
+# source edits (deps: the OpenTelemetry SDK for trace export, ADR-007 — the
+# consensus core itself is stdlib-only). Context is trimmed by .dockerignore.
+COPY go.mod go.sum ./
+RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 

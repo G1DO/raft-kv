@@ -1,0 +1,134 @@
+{
+  "title": "raft-kv / Write SLO burn rate",
+  "uid": "raftkv-slo",
+  "tags": ["raft-kv"],
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "## Objective: **99% of writes succeed** (PUT/DELETE, `result=\"ok\"`)\n\nError budget = 1% of writes. **Burn rate** = (observed error ratio) ÷ (budget ratio): burn 1 = spending exactly the budget; burn 14.4 sustained for 1h eats ~2% of a 30-day budget (the classic page-worthy threshold). `not_leader` redirects are excluded — they are routing, not failures."
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Write success (1h)",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result=\"ok\"}[1h])) / sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result!=\"not_leader\"}[1h]))",
+          "legendFormat": "success 1h",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0.9, "max": 1, "decimals": 3,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.985 }, { "color": "green", "value": 0.99 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Burn rate (5m, fast window)",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "(1 - (sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result=\"ok\"}[5m])) / sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result!=\"not_leader\"}[5m])))) / 0.01",
+          "legendFormat": "burn 5m",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none", "decimals": 2,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 14.4 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Burn rate (1h, slow window)",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "(1 - (sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result=\"ok\"}[1h])) / sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result!=\"not_leader\"}[1h])))) / 0.01",
+          "legendFormat": "burn 1h",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none", "decimals": 2,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 14.4 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Burn rate over time (5m vs 1h windows)",
+      "description": "Multi-window burn: the 5m line spikes on a failover (leader kill → commit timeouts) and recovers; a raised 1h line means sustained damage. Alerting would page on BOTH exceeding a threshold.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "(1 - (sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result=\"ok\"}[5m])) / sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result!=\"not_leader\"}[5m])))) / 0.01",
+          "legendFormat": "burn 5m",
+          "refId": "A"
+        },
+        {
+          "expr": "(1 - (sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result=\"ok\"}[1h])) / sum(rate(raftkv_requests_total{op=~\"PUT|DELETE\",result!=\"not_leader\"}[1h])))) / 0.01",
+          "legendFormat": "burn 1h",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "fillOpacity": 10, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 14.4 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Write latency p99 vs objective",
+      "description": "Secondary latency objective: p99 write under 250ms. Ties the SLO view back to raft_commit_latency (the consensus cost inside each write).",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(raftkv_request_duration_seconds_bucket{op=~\"PUT|DELETE\"}[5m])))", "legendFormat": "write p99", "refId": "A" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(raft_commit_latency_seconds_bucket[5m])))", "legendFormat": "raft commit p99 (inside the write)", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 10, "thresholdsStyle": { "mode": "line" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.25 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}

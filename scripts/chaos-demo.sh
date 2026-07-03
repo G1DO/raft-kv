@@ -49,6 +49,7 @@ start_node() {
   local port=$1
   ./raft-kv --id "${ID[$port]}" --addr "localhost:$port" \
     --raft-addr "localhost:${RAFT[$port]}" \
+    --metrics-addr "localhost:$((port + 12000))" \
     --peers "$(peers_for "$port")" --data "$DATA/${ID[$port]}" \
     >"$DATA/${ID[$port]}.log" 2>&1 &
   PID[$port]=$!

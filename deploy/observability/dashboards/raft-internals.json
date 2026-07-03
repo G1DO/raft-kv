@@ -1,0 +1,123 @@
+{
+  "title": "raft-kv / Raft internals",
+  "uid": "raftkv-raft-internals",
+  "tags": ["raft-kv"],
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "timezone": "browser",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Current term",
+      "description": "The highest Raft term any member reports. A jump means an election happened.",
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max(raft_term)", "legendFormat": "term", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "blue" } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "state-timeline",
+      "title": "Leader over time (by pod)",
+      "description": "raft_is_leader per member. Exactly one row should be Leader at a time; a color flip is a leadership change.",
+      "gridPos": { "h": 6, "w": 20, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max by (pod) (raft_is_leader)", "legendFormat": "{{pod}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 70, "lineWidth": 0 },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "follower", "color": "dark-blue" }, "1": { "text": "LEADER", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "options": { "showValue": "auto", "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Elections started (rate)",
+      "description": "rate(raft_elections_total). Zero in steady state; spikes when a leader dies or the network partitions.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (pod) (rate(raft_elections_total[1m]))", "legendFormat": "{{pod}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Commit latency (append → commit)",
+      "description": "Leader-side time from log append to quorum commit: replication fan-out + follower fsync. The M2 benchmark's 76 ms p99, live.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(raft_commit_latency_seconds_bucket[5m])))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(raft_commit_latency_seconds_bucket[5m])))", "legendFormat": "p99", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Commit index vs applied index",
+      "description": "Committed ≠ applied: an entry is durable at commit but visible only after apply. A growing gap means the apply loop is falling behind.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max(raft_commit_index)", "legendFormat": "commit index", "refId": "A" },
+        { "expr": "max(raft_applied_index)", "legendFormat": "applied index", "refId": "B" },
+        { "expr": "max(raft_commit_index) - max(raft_applied_index)", "legendFormat": "gap (commit - applied)", "refId": "C" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "fillOpacity": 5 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Log length & snapshot floor (by pod)",
+      "description": "In-memory log entries per member, and the last index folded into a snapshot. Log length dropping while the floor rises = compaction working.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max by (pod) (raft_log_length)", "legendFormat": "log length {{pod}}", "refId": "A" },
+        { "expr": "max by (pod) (raft_last_included_index)", "legendFormat": "snapshot floor {{pod}}", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "fillOpacity": 5 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Leadership changes (cumulative)",
+      "description": "raft_leadership_changes_total per pod — how many times each member has won an election since start.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max by (pod) (raft_leadership_changes_total)", "legendFormat": "{{pod}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Election duration",
+      "description": "Time from election start to becoming leader (winner's view) — the availability gap during failover.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(raft_election_duration_seconds_bucket[10m])))", "legendFormat": "p99", "refId": "A" },
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(raft_election_duration_seconds_bucket[10m])))", "legendFormat": "p50", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}

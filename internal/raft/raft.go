@@ -3,12 +3,14 @@ package raft
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/G1DO/raft-kv/internal/log"
+	"github.com/G1DO/raft-kv/internal/metrics"
 )
 
 type State int
@@ -42,6 +44,7 @@ type Raft struct {
 	// Election
 	electionTimer *time.Timer // fires when election timeout expires
 	votesReceived int         // count of votes when candidate
+	electionStart time.Time
 
 	// Heartbeat (leader only)
 	heartbeatTimer *time.Timer // fires to send heartbeats to followers
@@ -59,6 +62,8 @@ type Raft struct {
 	// Leader state (reinitialized after election)
 	nextIndex  map[string]int // for each peer: index of next entry to send
 	matchIndex map[string]int // for each peer: highest entry known to be replicated
+	// entryTimestamps tracks leader-local append time until the entry commits.
+	entryTimestamps map[int]time.Time
 
 	// Channel to send committed commands to application
 	applyCh chan ApplyMsg
@@ -76,11 +81,14 @@ type Raft struct {
 	lastIncludedIndex int    // snapshot covers entries 1 through this index
 	lastIncludedTerm  int    // the term of the entry at lastIncludedIndex
 	snapshotData      []byte // the actual snapshot (serialized state machine)
+
+	logger *slog.Logger
+	metric *raftMetrics
 }
 
 // NewRaft creates a new Raft node
 // applyCh is optional - if nil, committed commands won't be sent anywhere
-func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, statePath string, snapshotPath string) *Raft {
+func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, statePath string, snapshotPath string, logger *slog.Logger, registry *metrics.Registry) *Raft {
 	persistentLog, err := log.NewLog(logPath)
 	if err != nil {
 		panic(err)
@@ -137,17 +145,71 @@ func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, s
 		statePath:         statePath,
 		snapshotPath:      snapshotPath,
 		log:               logEntries,
+		entryTimestamps:   make(map[int]time.Time),
 		lastIncludedIndex: savedSnapshot.LastIncludedIndex,
 		lastIncludedTerm:  savedSnapshot.LastIncludedTerm,
 		snapshotData:      savedSnapshot.Data,
+		logger:            logger,
+		metric:            newRaftMetrics(registry),
+	}
+	if r.logger == nil {
+		r.logger = slog.Default()
 	}
 
 	// Replay config changes to restore cluster membership
 	for _, change := range configChanges {
 		r.applyConfigChange(change)
 	}
+	r.updateMetricsLocked()
 
 	return r
+}
+
+type raftMetrics struct {
+	term              *metrics.Gauge
+	isLeader          *metrics.Gauge
+	leadershipChanges *metrics.Counter
+	elections         *metrics.Counter
+	electionDuration  *metrics.Histogram
+	commitIndex       *metrics.Gauge
+	appliedIndex      *metrics.Gauge
+	logLength         *metrics.Gauge
+	lastIncludedIndex *metrics.Gauge
+	commitLatency     *metrics.Histogram
+}
+
+func newRaftMetrics(registry *metrics.Registry) *raftMetrics {
+	if registry == nil {
+		return nil
+	}
+	return &raftMetrics{
+		term:              registry.NewGauge("raft_term", "Current Raft term."),
+		isLeader:          registry.NewGauge("raft_is_leader", "Whether this node currently believes it is leader."),
+		leadershipChanges: registry.NewCounter("raft_leadership_changes_total", "Number of times this node became leader."),
+		elections:         registry.NewCounter("raft_elections_total", "Number of elections started by this node."),
+		electionDuration:  registry.NewHistogram("raft_election_duration_seconds", "Time from election start to leadership.", []float64{0.05, 0.1, 0.2, 0.5, 1, 2, 5}),
+		commitIndex:       registry.NewGauge("raft_commit_index", "Highest committed Raft log index."),
+		appliedIndex:      registry.NewGauge("raft_applied_index", "Highest applied Raft log index."),
+		logLength:         registry.NewGauge("raft_log_length", "Number of entries currently retained in memory."),
+		lastIncludedIndex: registry.NewGauge("raft_last_included_index", "Highest log index included in the latest snapshot."),
+		commitLatency:     registry.NewHistogram("raft_commit_latency_seconds", "Time from leader append to commit.", []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5}),
+	}
+}
+
+func (r *Raft) updateMetricsLocked() {
+	if r.metric == nil {
+		return
+	}
+	r.metric.term.Set(float64(r.currentTerm))
+	if r.state == Leader {
+		r.metric.isLeader.Set(1)
+	} else {
+		r.metric.isLeader.Set(0)
+	}
+	r.metric.commitIndex.Set(float64(r.commitIndex))
+	r.metric.appliedIndex.Set(float64(r.lastApplied))
+	r.metric.logLength.Set(float64(len(r.log)))
+	r.metric.lastIncludedIndex.Set(float64(r.lastIncludedIndex))
 }
 
 // persist saves currentTerm and votedFor to disk
@@ -185,14 +247,21 @@ func (r *Raft) startElection() {
 
 	// Change state to Candidate
 	r.state = Candidate
+	r.leaderID = ""
 
 	// Increment currentTerm (new election = new term)
 	r.currentTerm++
+	r.electionStart = time.Now()
+	if r.metric != nil {
+		r.metric.elections.Inc()
+	}
+	r.logger.Info("election_started", "node", r.id, "term", r.currentTerm)
 
 	// Vote for yourself
 	r.votedFor = r.id
 	r.votesReceived = 1
 	r.persist() // save term and vote to disk
+	r.updateMetricsLocked()
 
 	// Reset election timer under the lock so r.electionTimer is not touched
 	// concurrently with AppendEntries/Start/InstallSnapshot (which also call
@@ -248,10 +317,13 @@ func (r *Raft) handleVoteResponse(reply *RequestVoteReply) {
 
 	// If reply has higher term, step down
 	if reply.Term > r.currentTerm {
+		r.logger.Warn("stepping_down", "node", r.id, "old_term", r.currentTerm, "new_term", reply.Term, "reason", "vote_response_higher_term")
 		r.currentTerm = reply.Term
 		r.state = Follower
+		r.leaderID = ""
 		r.votedFor = ""
 		r.persist() // save term and vote to disk
+		r.updateMetricsLocked()
 		return
 	}
 
@@ -276,6 +348,13 @@ func (r *Raft) handleVoteResponse(reply *RequestVoteReply) {
 func (r *Raft) becomeLeader() {
 	r.state = Leader
 	r.leaderID = r.id
+	if r.metric != nil {
+		r.metric.leadershipChanges.Inc()
+		if !r.electionStart.IsZero() {
+			r.metric.electionDuration.Observe(time.Since(r.electionStart).Seconds())
+		}
+	}
+	r.logger.Info("election_won", "node", r.id, "term", r.currentTerm, "peers", len(r.peers))
 	if r.electionTimer != nil {
 		r.electionTimer.Stop() // leaders don't need election timer
 	}
@@ -288,6 +367,7 @@ func (r *Raft) becomeLeader() {
 		r.nextIndex[peer] = len(r.log) + 1 // optimistic: assume peer is caught up
 		r.matchIndex[peer] = 0             // pessimistic: nothing confirmed yet
 	}
+	r.updateMetricsLocked()
 
 	// Start sending heartbeats to all peers
 	r.startHeartbeats()
@@ -386,13 +466,16 @@ func (r *Raft) sendHeartbeat(peer string) {
 
 	// If reply has higher term, step down
 	if reply.Term > r.currentTerm {
+		r.logger.Warn("stepping_down", "node", r.id, "old_term", r.currentTerm, "new_term", reply.Term, "reason", "append_entries_reply_higher_term", "peer", peer)
 		r.currentTerm = reply.Term
 		r.state = Follower
+		r.leaderID = ""
 		r.votedFor = ""
 		r.persist() // save term and vote to disk
 		if r.heartbeatTimer != nil {
 			r.heartbeatTimer.Stop()
 		}
+		r.updateMetricsLocked()
 		return
 	}
 
@@ -445,13 +528,16 @@ func (r *Raft) sendInstallSnapshot(peer string) {
 
 	// If reply has higher term, step down
 	if reply.Term > r.currentTerm {
+		r.logger.Warn("stepping_down", "node", r.id, "old_term", r.currentTerm, "new_term", reply.Term, "reason", "install_snapshot_reply_higher_term", "peer", peer)
 		r.currentTerm = reply.Term
 		r.state = Follower
+		r.leaderID = ""
 		r.votedFor = ""
 		r.persist()
 		if r.heartbeatTimer != nil {
 			r.heartbeatTimer.Stop()
 		}
+		r.updateMetricsLocked()
 		return
 	}
 
@@ -470,6 +556,7 @@ func (r *Raft) sendInstallSnapshot(peer string) {
 // An entry is committed when majority of cluster has it
 // Only commits entries from current term (Raft safety rule)
 func (r *Raft) updateCommitIndex() {
+	oldCommit := r.commitIndex
 	// For each index from commitIndex+1 to len(log)
 	for n := r.commitIndex + 1; n <= len(r.log); n++ {
 		// Only commit entries from current term
@@ -492,6 +579,17 @@ func (r *Raft) updateCommitIndex() {
 			r.commitIndex = n
 		}
 	}
+	if r.commitIndex > oldCommit && r.metric != nil {
+		now := time.Now()
+		for n := oldCommit + 1; n <= r.commitIndex; n++ {
+			index := n + r.lastIncludedIndex
+			if started, ok := r.entryTimestamps[index]; ok {
+				r.metric.commitLatency.Observe(now.Sub(started).Seconds())
+				delete(r.entryTimestamps, index)
+			}
+		}
+	}
+	r.updateMetricsLocked()
 
 	// Apply newly committed entries
 	r.applyCommitted()
@@ -529,6 +627,7 @@ func (r *Raft) applyCommitted() {
 			r.applyCh <- msg
 		}
 	}
+	r.updateMetricsLocked()
 }
 
 // RequestVoteArgs is what a candidate sends when asking for votes
@@ -563,10 +662,13 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// Rule 2: If candidate's term > my term, update my term and become follower
 	if args.Term > r.currentTerm {
+		r.logger.Warn("stepping_down", "node", r.id, "old_term", r.currentTerm, "new_term", args.Term, "reason", "request_vote_higher_term", "candidate", args.CandidateID)
 		r.currentTerm = args.Term // update to their term
 		r.state = Follower        // step down
-		r.votedFor = ""           // new term = can vote again
-		r.persist()               // save term and vote to disk
+		r.leaderID = ""
+		r.votedFor = "" // new term = can vote again
+		r.persist()     // save term and vote to disk
+		r.updateMetricsLocked()
 	}
 	// Get my last log info
 	myLastLogIndex := len(r.log)
@@ -592,6 +694,7 @@ func (r *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		r.votedFor = args.CandidateID
 		r.persist() // save vote to disk
 		reply.VoteGranted = true
+		r.logger.Info("vote_granted", "node", r.id, "term", r.currentTerm, "candidate", args.CandidateID)
 	}
 }
 
@@ -644,16 +747,24 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 
 	// Rule 2: If leader's term >= my term, accept them as leader
 	if args.Term > r.currentTerm {
+		r.logger.Warn("stepping_down", "node", r.id, "old_term", r.currentTerm, "new_term", args.Term, "reason", "append_entries_higher_term", "leader", args.LeaderID)
 		r.currentTerm = args.Term
 		r.votedFor = ""
 		r.persist() // save term and vote to disk
 	}
 
 	// Step down to follower (even if we were candidate or leader)
+	if r.state != Follower && r.state != Leader {
+		r.logger.Info("leader_observed", "node", r.id, "term", args.Term, "leader", args.LeaderID)
+	}
+	if r.state == Leader && args.LeaderID != r.id {
+		r.logger.Warn("stepping_down", "node", r.id, "old_term", r.currentTerm, "new_term", args.Term, "reason", "append_entries_from_leader", "leader", args.LeaderID)
+	}
 	r.state = Follower
 
 	// Record who the leader is so we can redirect clients
 	r.leaderID = args.LeaderID
+	r.updateMetricsLocked()
 
 	// Reset election timer - leader is alive!
 	r.resetElectionTimer()
@@ -698,6 +809,7 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 		// Apply newly committed entries
 		r.applyCommitted()
 	}
+	r.updateMetricsLocked()
 }
 
 // InstallSnapshot handles incoming snapshot from leader
@@ -720,6 +832,7 @@ func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshot
 
 	// Rule 2: Update term if leader has higher term
 	if args.Term > r.currentTerm {
+		r.logger.Warn("stepping_down", "node", r.id, "old_term", r.currentTerm, "new_term", args.Term, "reason", "install_snapshot_higher_term", "leader", args.LeaderID)
 		r.currentTerm = args.Term
 		r.votedFor = ""
 		r.persist()
@@ -727,6 +840,7 @@ func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshot
 
 	// Accept leader, become follower
 	r.state = Follower
+	r.leaderID = args.LeaderID
 	r.resetElectionTimer()
 
 	// Rule 3: Ignore if we already have a newer snapshot
@@ -761,6 +875,12 @@ func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshot
 	r.lastIncludedIndex = args.LastIncludedIndex
 	r.lastIncludedTerm = args.LastIncludedTerm
 	r.snapshotData = args.Data
+	for index := range r.entryTimestamps {
+		if index <= args.LastIncludedIndex {
+			delete(r.entryTimestamps, index)
+		}
+	}
+	r.logger.Info("snapshot_installed", "node", r.id, "leader", args.LeaderID, "last_included_index", args.LastIncludedIndex, "last_included_term", args.LastIncludedTerm)
 
 	// Reset commitIndex and lastApplied to snapshot point
 	// (state machine will be restored from snapshot)
@@ -780,6 +900,7 @@ func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshot
 			IsSnapshot:   true,
 		}
 	}
+	r.updateMetricsLocked()
 }
 
 // RPCMessage wraps all RPC requests
@@ -865,6 +986,7 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 	// Connect to peer
 	conn, err := net.DialTimeout("tcp", peer, 500*time.Millisecond)
 	if err != nil {
+		r.logger.Warn("rpc_failed", "node", r.id, "peer", peer, "rpc", rpcType, "stage", "dial", "error", err)
 		return false // peer unreachable
 	}
 	defer conn.Close()
@@ -875,6 +997,7 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 	// Encode args to JSON
 	argsData, err := json.Marshal(args)
 	if err != nil {
+		r.logger.Warn("rpc_failed", "node", r.id, "peer", peer, "rpc", rpcType, "stage", "marshal", "error", err)
 		return false
 	}
 
@@ -885,6 +1008,7 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 	}
 	encoder := json.NewEncoder(conn)
 	if err := encoder.Encode(msg); err != nil {
+		r.logger.Warn("rpc_failed", "node", r.id, "peer", peer, "rpc", rpcType, "stage", "encode", "error", err)
 		return false
 	}
 
@@ -892,11 +1016,13 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 	decoder := json.NewDecoder(conn)
 	var response RPCResponse
 	if err := decoder.Decode(&response); err != nil {
+		r.logger.Warn("rpc_failed", "node", r.id, "peer", peer, "rpc", rpcType, "stage", "decode", "error", err)
 		return false
 	}
 
 	// Decode response into reply
 	if err := json.Unmarshal(response.Data, reply); err != nil {
+		r.logger.Warn("rpc_failed", "node", r.id, "peer", peer, "rpc", rpcType, "stage", "unmarshal", "error", err)
 		return false
 	}
 
@@ -954,8 +1080,10 @@ func (r *Raft) AppendCommand(command []byte) (index int, term int, isLeader bool
 
 	// Return index (1-based), term, and true (we are leader)
 	index = len(r.log) + r.lastIncludedIndex
+	r.entryTimestamps[index] = time.Now()
 	term = r.currentTerm
 	isLeader = true
+	r.updateMetricsLocked()
 	return
 }
 
@@ -1004,8 +1132,11 @@ func (r *Raft) AddServer(serverID, serverAddr string) (index int, term int, isLe
 	r.applyConfigChange(entry.ConfigChange)
 
 	index = len(r.log) + r.lastIncludedIndex
+	r.entryTimestamps[index] = time.Now()
 	term = r.currentTerm
 	isLeader = true
+	r.updateMetricsLocked()
+	r.logger.Info("membership_changed", "node", r.id, "action", "add", "server_id", serverID, "server_addr", serverAddr)
 	return
 }
 
@@ -1055,8 +1186,11 @@ func (r *Raft) RemoveServer(serverID, serverAddr string) (index int, term int, i
 	r.applyConfigChange(entry.ConfigChange)
 
 	index = len(r.log) + r.lastIncludedIndex
+	r.entryTimestamps[index] = time.Now()
 	term = r.currentTerm
 	isLeader = true
+	r.updateMetricsLocked()
+	r.logger.Info("membership_changed", "node", r.id, "action", "remove", "server_id", serverID, "server_addr", serverAddr)
 	return
 }
 
@@ -1103,10 +1237,12 @@ func (r *Raft) applyConfigChange(change *ConfigChange) {
 
 		// If we removed ourselves, step down
 		if change.ServerAddr == r.rpcAddr {
+			r.logger.Warn("stepping_down", "node", r.id, "term", r.currentTerm, "reason", "removed_self", "server_addr", change.ServerAddr)
 			r.state = Follower
 			if r.heartbeatTimer != nil {
 				r.heartbeatTimer.Stop()
 			}
+			r.updateMetricsLocked()
 		}
 	}
 }
@@ -1144,6 +1280,7 @@ func (r *Raft) Stop() {
 	if r.listener != nil {
 		r.listener.Close()
 	}
+	r.updateMetricsLocked()
 }
 
 // IsLeader reports whether this node currently believes it is the leader.
@@ -1159,6 +1296,23 @@ func (r *Raft) LeaderID() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.leaderID
+}
+
+// Ready reports whether the node has joined enough of the cluster to serve
+// traffic and has applied all committed entries it knows about.
+func (r *Raft) Ready() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.listener == nil {
+		return false
+	}
+	if r.lastApplied < r.commitIndex {
+		return false
+	}
+	if len(r.peers) == 0 {
+		return true
+	}
+	return r.state == Leader || r.leaderID != ""
 }
 
 // ReadIndex implements linearizable reads by confirming leadership before reading.
@@ -1309,6 +1463,11 @@ func (r *Raft) TakeSnapshot(snapshotIndex int, data []byte) {
 	r.lastIncludedIndex = snapshotIndex
 	r.lastIncludedTerm = snapshotTerm
 	r.snapshotData = data
+	for index := range r.entryTimestamps {
+		if index <= snapshotIndex {
+			delete(r.entryTimestamps, index)
+		}
+	}
 
 	// Persist snapshot to disk (for crash recovery)
 	snapshot := SnapshotState{
@@ -1317,6 +1476,8 @@ func (r *Raft) TakeSnapshot(snapshotIndex int, data []byte) {
 		Data:              data,
 	}
 	SaveSnapshot(r.snapshotPath, snapshot)
+	r.logger.Info("snapshot_taken", "node", r.id, "last_included_index", snapshotIndex, "last_included_term", snapshotTerm)
+	r.updateMetricsLocked()
 }
 
 // getLogIndex converts slice index to absolute Raft index

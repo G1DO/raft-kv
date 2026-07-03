@@ -19,12 +19,15 @@ image:
   # for a tag that is already on the node). Set to Always for a real registry.
   pullPolicy: IfNotPresent
 
-# Client KV protocol (client) and Raft peer RPC (raft) ports. Changing either
-# updates the container ports, the Service, the probes, and the generated peers
-# together — they cannot drift apart.
+# Client KV protocol (client), Raft peer RPC (raft), and HTTP metrics/health
+# (metrics) ports. Changing any of these updates the container ports, the
+# Service, the probes, the --metrics-addr arg, and the generated peers together
+# — they cannot drift apart. metrics avoids 9090 (raft RPC) and 9100
+# (node-exporter); it serves /metrics, /healthz, /readyz.
 ports:
   client: 8080
   raft: 9090
+  metrics: 2112
 
 # Per-pod PersistentVolumeClaim holding the WAL + snapshots. Retained across
 # reschedules so a pod rejoins with its history instead of as a blank node.
@@ -66,6 +69,30 @@ livenessProbe:
 readinessProbe:
   initialDelaySeconds: 2
   periodSeconds: 5
+
+# Prometheus scrape discovery for the metrics port.
+# serviceMonitor requires the Prometheus Operator CRDs (installed by the
+# observability stack, deploy/observability) — enabling it without them makes
+# install fail at CRD validation. The annotations fallback needs no CRDs but is
+# only honored by Prometheus configs that scrape by pod annotation.
+metrics:
+  serviceMonitor:
+    enabled: false
+    # How often Prometheus scrapes each pod.
+    interval: 15s
+    # Extra labels on the ServiceMonitor object (some Prometheus installs select
+    # ServiceMonitors by label, e.g. release: <kube-prometheus-stack release>).
+    labels: {}
+  # prometheus.io/* pod annotations as the no-CRD fallback.
+  scrapeAnnotations:
+    enabled: false
+
+# Distributed tracing (ADR-007). Empty => tracing off, binary makes no
+# telemetry connections. Set to an OTLP/HTTP host:port — with the observability
+# stack installed that is Tempo's built-in receiver:
+#   tempo.observability.svc.cluster.local:4318
+tracing:
+  otlpEndpoint: ""
 
 # Override the generated resource names. Empty => the chart's fullname helper
 # (release name, collapsing to "raft-kv" for a release also named raft-kv).
