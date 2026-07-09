@@ -196,6 +196,23 @@ are committed JSON, loaded by Grafana's sidecar. `scripts/observability-demo.sh`
 reproduces the correlation demo: leader killed under load, one incident visible in
 every signal.
 
+## Reliability
+
+Kubernetes can break quorum as easily as a Raft bug if resource policy is wrong.
+The Helm chart therefore sizes each voter deliberately (see
+`deploy/helm/raft-kv/values.yaml`):
+
+- **CPU request, no CPU limit.** Election and heartbeat paths are latency-sensitive;
+  CFS throttling under a limit looks like a slow peer and can amplify elections.
+- **Memory request == limit (Guaranteed).** OOM kills bypass PodDisruptionBudgets;
+  during a rolling update an OOM on a second pod is a quorum loss. Snapshot
+  construction marshals the full KV state, so the limit must leave headroom.
+- **`GOMEMLIMIT` ≈ 90% of the memory limit.** Soft-caps the Go heap so GC prefers
+  collecting over growing into a kubelet OOMKill.
+
+Probe mapping (`/healthz` vs `/readyz`), PDB math, and backup/restore are covered
+alongside this policy in ADR-008 (M7).
+
 ## Known correctness gaps
 
 These are real and deliberate. Listed here so reviewers don't have to find them by reading the code.

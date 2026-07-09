@@ -36,17 +36,26 @@ persistence:
   # "" => the cluster's default StorageClass. Pin it for reproducibility.
   storageClassName: ""
 
-# Container resource requests/limits. Empty by default (parity with the raw
-# manifest); set per-environment. A consensus voter is latency-sensitive, so
-# CPU throttling shows up directly as election/commit latency — sized rationale
-# is M7's job.
-resources: {}
-  # requests:
-  #   cpu: 100m
-  #   memory: 64Mi
-  # limits:
-  #   cpu: 500m
-  #   memory: 128Mi
+# Container resources for a Raft voter (M7).
+#
+# - CPU: request only, NO limit. CFS throttling during elections/heartbeats
+#   shows up as commit latency and can cascade into election storms.
+# - Memory: request == limit → Guaranteed QoS on the dimension that OOM-kills.
+#   An OOM during a rolling update can mean 2 down = quorum lost; PDBs cannot
+#   stop OOM kills (voluntary-eviction only).
+# - Sized for kind + light throughput bench. Raise memory (and gomemlimit
+#   together) if snapshots grow — TakeSnapshot marshals the full KV state.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 128Mi
+
+# Soft Go heap cap (~90% of memory limit). Without this, default GC can push
+# RSS over the limit during snapshot marshal and the kubelet OOMKills the pod.
+# Use Go's binary units (MiB), not Kubernetes' Mi.
+gomemlimit: "115MiB"
 
 # The binary traps SIGTERM and steps down (graceful leader handoff), so a short
 # grace period is enough.
