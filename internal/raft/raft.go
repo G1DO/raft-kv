@@ -388,22 +388,46 @@ func (r *Raft) becomeLeader() {
 	if r.electionTimer != nil {
 		r.electionTimer.Stop() // leaders don't need election timer
 	}
-	// Leader must be Ready for Service endpoints; catch-up is driven by this
-	// node's own commit/apply path from here (clients write via the leader).
-	r.needsCatchUp = false
 
-	// Initialize nextIndex and matchIndex for all peers
+	// Raft: a leader may only advance commitIndex for an entry from its own
+	// term. Append a no-op so prior-term WAL entries (and the empty-KV restart
+	// gap) can commit and apply. Do NOT clear needsCatchUp here — Ready waits
+	// until applyCommitted clears it after the no-op commits.
+	r.appendNoOpLocked()
+
+	// Initialize nextIndex/matchIndex after the no-op so peers are asked for
+	// the new tip (absolute index = lastIncludedIndex + len(log) + 1).
 	r.nextIndex = make(map[string]int)
 	r.matchIndex = make(map[string]int)
-
 	for _, peer := range r.peers {
-		r.nextIndex[peer] = len(r.log) + 1 // optimistic: assume peer is caught up
-		r.matchIndex[peer] = 0             // pessimistic: nothing confirmed yet
+		r.nextIndex[peer] = r.lastIncludedIndex + len(r.log) + 1
+		r.matchIndex[peer] = 0
 	}
 	r.updateMetricsLocked()
 
+	// Single-node: no peers to ack, so commit the no-op locally. Multi-node
+	// commit advances when heartbeats get majority matchIndex.
+	if len(r.peers) == 0 {
+		r.updateCommitIndex()
+	}
+
 	// Start sending heartbeats to all peers
 	r.startHeartbeats()
+}
+
+// appendNoOpLocked appends an empty command in the current term. Caller holds r.mu
+// and must already be Leader. Empty commands are skipped in applyCommitted.
+func (r *Raft) appendNoOpLocked() {
+	entry := LogEntry{
+		Term:    r.currentTerm,
+		Command: nil,
+	}
+	r.log = append(r.log, entry)
+	data, _ := json.Marshal(entry)
+	r.persistentLog.Append(data)
+	index := len(r.log) + r.lastIncludedIndex
+	r.entryTimestamps[index] = time.Now()
+	r.logger.Info("noop_appended", "node", r.id, "term", r.currentTerm, "index", index)
 }
 
 // startHeartbeats begins the heartbeat loop (leader only).
@@ -590,10 +614,15 @@ func (r *Raft) sendInstallSnapshot(peer string) {
 // Only commits entries from current term (Raft safety rule)
 func (r *Raft) updateCommitIndex() {
 	oldCommit := r.commitIndex
-	// For each index from commitIndex+1 to len(log)
-	for n := r.commitIndex + 1; n <= len(r.log); n++ {
+	lastLogIndex := r.lastIncludedIndex + len(r.log)
+	// Absolute Raft indices (commitIndex / matchIndex are not slice offsets).
+	for n := r.commitIndex + 1; n <= lastLogIndex; n++ {
+		sliceIdx := n - r.lastIncludedIndex - 1
+		if sliceIdx < 0 || sliceIdx >= len(r.log) {
+			continue
+		}
 		// Only commit entries from current term
-		if r.log[n-1].Term != r.currentTerm {
+		if r.log[sliceIdx].Term != r.currentTerm {
 			continue
 		}
 
@@ -615,10 +644,9 @@ func (r *Raft) updateCommitIndex() {
 	if r.commitIndex > oldCommit && r.metric != nil {
 		now := time.Now()
 		for n := oldCommit + 1; n <= r.commitIndex; n++ {
-			index := n + r.lastIncludedIndex
-			if started, ok := r.entryTimestamps[index]; ok {
+			if started, ok := r.entryTimestamps[n]; ok {
 				r.metric.commitLatency.Observe(now.Sub(started).Seconds())
-				delete(r.entryTimestamps, index)
+				delete(r.entryTimestamps, n)
 			}
 		}
 	}
@@ -649,6 +677,11 @@ func (r *Raft) applyCommitted() {
 				r.applyConfigChange(entry.ConfigChange)
 			}
 			continue // don't send config changes to state machine
+		}
+
+		// Leader election no-op (empty Command) — advances commit only.
+		if len(entry.Command) == 0 {
+			continue
 		}
 
 		// Regular command - send to state machine

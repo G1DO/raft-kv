@@ -468,17 +468,154 @@ func TestBecomeLeader_InitializesLogIndices(t *testing.T) {
 	r.becomeLeader()
 	r.mu.Unlock()
 
-	// Check nextIndex: should be len(log) + 1 = 3 for each peer
+	// becomeLeader appends a current-term no-op, so log length is 3 and
+	// nextIndex = lastIncludedIndex + len(log) + 1 = 4.
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if len(r.log) != 3 || len(r.log[2].Command) != 0 {
+		t.Fatalf("expected no-op as 3rd entry, got len=%d cmd=%q", len(r.log), r.log[len(r.log)-1].Command)
+	}
 	for _, peer := range r.peers {
-		if r.nextIndex[peer] != 3 {
-			t.Errorf("nextIndex[%s] = %d, want 3", peer, r.nextIndex[peer])
+		if r.nextIndex[peer] != 4 {
+			t.Errorf("nextIndex[%s] = %d, want 4", peer, r.nextIndex[peer])
 		}
 		if r.matchIndex[peer] != 0 {
 			t.Errorf("matchIndex[%s] = %d, want 0", peer, r.matchIndex[peer])
 		}
+	}
+}
+
+func TestBecomeLeader_NoOpCommitsPriorTermEntries(t *testing.T) {
+	// Restart gap: WAL has prior-term entries, commit/applied are 0, needsCatchUp
+	// is set. Winning an election must append a no-op and, once that commits,
+	// apply prior entries and clear needsCatchUp — not clear it eagerly.
+	tempDir, err := os.MkdirTemp("", "raft-noop-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tempDir) })
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
+	applyCh := make(chan ApplyMsg, 8)
+
+	r1 := NewRaft("node1", []string{}, applyCh, logPath, statePath, snapshotPath, nil, nil)
+	r1.mu.Lock()
+	r1.state = Leader
+	r1.currentTerm = 1
+	r1.mu.Unlock()
+	if _, _, ok := r1.AppendCommand([]byte("PUT a 1")); !ok {
+		t.Fatal("AppendCommand failed")
+	}
+	if _, _, ok := r1.AppendCommand([]byte("PUT b 2")); !ok {
+		t.Fatal("AppendCommand failed")
+	}
+	r1.Stop()
+
+	r2 := NewRaft("node1", []string{}, applyCh, logPath, statePath, snapshotPath, nil, nil)
+	t.Cleanup(func() { r2.Stop() })
+	if !r2.needsCatchUp {
+		t.Fatal("expected needsCatchUp after WAL-only restart")
+	}
+	if err := r2.StartRPCServer("localhost:0"); err != nil {
+		t.Fatalf("StartRPCServer: %v", err)
+	}
+	if r2.Ready() {
+		t.Fatal("must not be Ready before catch-up")
+	}
+
+	r2.mu.Lock()
+	r2.state = Candidate
+	r2.currentTerm = 2
+	r2.becomeLeader()
+	noopTerm := 0
+	if len(r2.log) > 0 {
+		noopTerm = r2.log[len(r2.log)-1].Term
+	}
+	catchUp := r2.needsCatchUp
+	commit := r2.commitIndex
+	appliedIdx := r2.lastApplied
+	r2.mu.Unlock()
+
+	if noopTerm != 2 {
+		t.Fatalf("expected current-term no-op, last entry term=%d", noopTerm)
+	}
+	// Single-node: becomeLeader commits the no-op in-process, so catch-up
+	// clears in the same call. Multi-node would keep needsCatchUp until peers ack.
+	if catchUp {
+		t.Fatal("single-node no-op commit should clear needsCatchUp")
+	}
+	if commit < 3 || appliedIdx < 3 {
+		t.Fatalf("expected commit/applied >= 3 after no-op, got %d/%d", commit, appliedIdx)
+	}
+	if !r2.Ready() {
+		t.Fatal("single-node leader should be Ready after no-op applies WAL")
+	}
+
+	applied := 0
+drain:
+	for {
+		select {
+		case msg := <-applyCh:
+			if !msg.IsSnapshot && len(msg.Command) > 0 {
+				applied++
+			}
+		default:
+			break drain
+		}
+	}
+	if applied < 2 {
+		t.Fatalf("expected prior PUT entries applied, got %d ApplyMsgs", applied)
+	}
+}
+
+func TestBecomeLeader_KeepsNeedsCatchUpUntilPeersAck(t *testing.T) {
+	// Multi-node: no-op is appended but cannot commit without majority, so
+	// needsCatchUp must stay true (Ready false) until replication catches up.
+	tempDir, err := os.MkdirTemp("", "raft-noop-multi-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tempDir) })
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
+	peers := []string{"localhost:9302", "localhost:9303"}
+
+	r1 := NewRaft("node1", peers, nil, logPath, statePath, snapshotPath, nil, nil)
+	r1.mu.Lock()
+	r1.state = Leader
+	r1.currentTerm = 1
+	r1.mu.Unlock()
+	if _, _, ok := r1.AppendCommand([]byte("PUT a 1")); !ok {
+		t.Fatal("AppendCommand failed")
+	}
+	r1.Stop()
+
+	r2 := NewRaft("node1", peers, nil, logPath, statePath, snapshotPath, nil, nil)
+	t.Cleanup(func() { r2.Stop() })
+	if !r2.needsCatchUp {
+		t.Fatal("expected needsCatchUp after WAL-only restart")
+	}
+	if err := r2.StartRPCServer("localhost:0"); err != nil {
+		t.Fatalf("StartRPCServer: %v", err)
+	}
+
+	r2.mu.Lock()
+	r2.state = Candidate
+	r2.currentTerm = 2
+	r2.becomeLeader()
+	catchUp := r2.needsCatchUp
+	r2.mu.Unlock()
+
+	if !catchUp {
+		t.Fatal("multi-node becomeLeader must keep needsCatchUp until no-op commits")
+	}
+	if r2.Ready() {
+		t.Fatal("must not be Ready while needsCatchUp")
 	}
 }
 
