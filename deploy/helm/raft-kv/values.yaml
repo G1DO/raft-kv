@@ -60,15 +60,30 @@ securityContext:
   runAsGroup: 65532
   fsGroup: 65532
 
-# Probes map to the Raft transport: the raft port being up means the process is
-# alive; the client port being up means it is serving. (Richer Raft-state-aware
-# liveness/readiness/startup probes are M7.)
+# Probes hit the metrics HTTP server (/healthz, /readyz) — not raw TCP ports.
+#
+# startup: /healthz answering means NewRaft finished (WAL replay is synchronous
+# before startHTTPServer). Budget = failureThreshold × periodSeconds; raise the
+# threshold for a genuinely fat WAL rather than guessing with liveness delays.
+# Liveness is suspended until startup succeeds.
+#
+# liveness: dumb "HTTP loop answers". Must NOT call Ready() or take r.mu —
+# restarting a healthy follower during slow snapshot/fsync is a quorum risk.
+#
+# readiness: /readyz → Raft.Ready(). Hysteresis (failureThreshold ≥ 3, period
+# 1–2s) absorbs election blips when leaderID clears (~150–300ms).
+startupProbe:
+  periodSeconds: 2
+  failureThreshold: 30 # 60s default boot budget
+  timeoutSeconds: 1
 livenessProbe:
-  initialDelaySeconds: 5
   periodSeconds: 10
+  failureThreshold: 3
+  timeoutSeconds: 1
 readinessProbe:
-  initialDelaySeconds: 2
-  periodSeconds: 5
+  periodSeconds: 2
+  failureThreshold: 3
+  timeoutSeconds: 1
 
 # Prometheus scrape discovery for the metrics port.
 # serviceMonitor requires the Prometheus Operator CRDs (installed by the

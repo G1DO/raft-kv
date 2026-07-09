@@ -55,17 +55,28 @@ spec:
               containerPort: {{ .Values.ports.raft }}
             - name: metrics
               containerPort: {{ .Values.ports.metrics }}
-          # Raft RPC up => the process is alive; client port up => it is serving.
+          # /healthz = boot done / process alive (dumb). /readyz = Raft.Ready().
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds }}
           livenessProbe:
-            tcpSocket:
-              port: raft
-            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            httpGet:
+              path: /healthz
+              port: metrics
             periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
           readinessProbe:
-            tcpSocket:
-              port: client
-            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            httpGet:
+              path: /readyz
+              port: metrics
             periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
