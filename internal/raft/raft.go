@@ -82,6 +82,13 @@ type Raft struct {
 	lastIncludedTerm  int    // the term of the entry at lastIncludedIndex
 	snapshotData      []byte // the actual snapshot (serialized state machine)
 
+	// needsCatchUp is set on restart when a non-empty WAL was replayed but
+	// commitIndex/lastApplied are still 0 (not persisted). Ready() must not
+	// treat 0>=0 as "caught up" while the state machine is still empty.
+	// Cleared once entries are applied, a snapshot is installed, or we become
+	// leader. Fresh bootstrap (empty disk) leaves this false.
+	needsCatchUp bool
+
 	logger *slog.Logger
 	metric *raftMetrics
 }
@@ -154,6 +161,29 @@ func NewRaft(id string, peers []string, applyCh chan ApplyMsg, logPath string, s
 	}
 	if r.logger == nil {
 		r.logger = slog.Default()
+	}
+
+	// Snapshot on disk: advance indices to the snapshot point (same as
+	// InstallSnapshot) and push the snapshot to the state machine. Without
+	// this, lastApplied stays 0 while lastIncludedIndex > 0 and the KV store
+	// boots empty even though snapshot bytes were loaded into Raft.
+	if savedSnapshot.LastIncludedIndex > 0 {
+		r.commitIndex = savedSnapshot.LastIncludedIndex
+		r.lastApplied = savedSnapshot.LastIncludedIndex
+		if applyCh != nil && len(savedSnapshot.Data) > 0 {
+			applyCh <- ApplyMsg{
+				CommandIndex: savedSnapshot.LastIncludedIndex,
+				Command:      savedSnapshot.Data,
+				IsSnapshot:   true,
+			}
+		}
+	}
+
+	// WAL-only restart: commit/applied still boot at 0, so Ready()'s
+	// lastApplied>=commitIndex check is vacuously true. Flag until catch-up.
+	// Snapshot restart already has honest indices above — no flag needed.
+	if savedSnapshot.LastIncludedIndex == 0 && len(logEntries) > 0 {
+		r.needsCatchUp = true
 	}
 
 	// Replay config changes to restore cluster membership
@@ -358,6 +388,9 @@ func (r *Raft) becomeLeader() {
 	if r.electionTimer != nil {
 		r.electionTimer.Stop() // leaders don't need election timer
 	}
+	// Leader must be Ready for Service endpoints; catch-up is driven by this
+	// node's own commit/apply path from here (clients write via the leader).
+	r.needsCatchUp = false
 
 	// Initialize nextIndex and matchIndex for all peers
 	r.nextIndex = make(map[string]int)
@@ -627,6 +660,10 @@ func (r *Raft) applyCommitted() {
 			r.applyCh <- msg
 		}
 	}
+	// Local history has been applied — vacuous 0/0 restart gap is closed.
+	if r.needsCatchUp && r.lastApplied > 0 {
+		r.needsCatchUp = false
+	}
 	r.updateMetricsLocked()
 }
 
@@ -890,6 +927,7 @@ func (r *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshot
 	if r.lastApplied < args.LastIncludedIndex {
 		r.lastApplied = args.LastIncludedIndex
 	}
+	r.needsCatchUp = false
 
 	// Signal application to load snapshot into state machine
 	// The applyCh will receive a special message with the snapshot
@@ -1300,10 +1338,20 @@ func (r *Raft) LeaderID() string {
 
 // Ready reports whether the node has joined enough of the cluster to serve
 // traffic and has applied all committed entries it knows about.
+//
+// After a WAL-only restart, commitIndex and lastApplied both boot at 0, so
+// lastApplied>=commitIndex is vacuously true while the state machine is still
+// empty. needsCatchUp blocks Ready until catch-up clears that gap (see NewRaft).
+// Probe hysteresis (failureThreshold≥3, period > election timeout) belongs in
+// the Kubernetes readinessProbe — Ready itself will briefly go false when
+// leaderID clears during an election.
 func (r *Raft) Ready() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.listener == nil {
+		return false
+	}
+	if r.needsCatchUp {
 		return false
 	}
 	if r.lastApplied < r.commitIndex {

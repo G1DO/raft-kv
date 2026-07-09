@@ -1238,3 +1238,147 @@ func TestConfigChange_Persistence(t *testing.T) {
 		t.Error("added peer should be restored from log")
 	}
 }
+
+func TestReady_FreshBootstrapReady(t *testing.T) {
+	r := newTestRaft(t, "node1", []string{"localhost:9002", "localhost:9003"}, nil)
+	if r.needsCatchUp {
+		t.Fatal("fresh bootstrap must not set needsCatchUp")
+	}
+	if err := r.StartRPCServer("localhost:0"); err != nil {
+		t.Fatalf("StartRPCServer: %v", err)
+	}
+	r.mu.Lock()
+	r.leaderID = "node2"
+	r.mu.Unlock()
+	if !r.Ready() {
+		t.Error("fresh bootstrap with listener and known leader should be Ready")
+	}
+}
+
+func TestReady_RestartedFollowerNotReadyUntilCaughtUp(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "raft-ready-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tempDir) })
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
+	peers := []string{"localhost:9102", "localhost:9103"}
+
+	r1 := NewRaft("node1", peers, nil, logPath, statePath, snapshotPath, nil, nil)
+	r1.mu.Lock()
+	r1.state = Leader
+	r1.currentTerm = 1
+	r1.mu.Unlock()
+	if _, _, ok := r1.AppendCommand([]byte("PUT a 1")); !ok {
+		t.Fatal("AppendCommand failed")
+	}
+	if _, _, ok := r1.AppendCommand([]byte("PUT b 2")); !ok {
+		t.Fatal("AppendCommand failed")
+	}
+	r1.Stop()
+
+	// Restart from the same disk: WAL replayed, commit/applied still 0.
+	r2 := NewRaft("node1", peers, nil, logPath, statePath, snapshotPath, nil, nil)
+	t.Cleanup(func() { r2.Stop() })
+	if !r2.needsCatchUp {
+		t.Fatal("expected needsCatchUp after WAL-only restart")
+	}
+	if err := r2.StartRPCServer("localhost:0"); err != nil {
+		t.Fatalf("StartRPCServer: %v", err)
+	}
+	r2.mu.Lock()
+	r2.leaderID = "node2"
+	r2.mu.Unlock()
+	if r2.Ready() {
+		t.Fatal("restarted follower must not be Ready while needsCatchUp")
+	}
+
+	// Simulate leader catch-up: commit and apply the replayed log.
+	r2.mu.Lock()
+	r2.commitIndex = len(r2.log)
+	r2.applyCommitted()
+	r2.mu.Unlock()
+	if r2.needsCatchUp {
+		t.Fatal("needsCatchUp should clear after apply")
+	}
+	if !r2.Ready() {
+		t.Error("restarted follower should be Ready after catch-up")
+	}
+}
+
+func TestReady_NotReadyWhenLeaderUnknown(t *testing.T) {
+	// Documents election-window behavior: leaderID clears → Ready false.
+	// Kubernetes readinessProbe hysteresis (failureThreshold≥3, period 1–2s)
+	// absorbs the ~150–300ms election blip; that math lives in Helm, not here.
+	r := newTestRaft(t, "node1", []string{"localhost:9202", "localhost:9203"}, nil)
+	if err := r.StartRPCServer("localhost:0"); err != nil {
+		t.Fatalf("StartRPCServer: %v", err)
+	}
+	if r.Ready() {
+		t.Fatal("multi-node follower with unknown leader must not be Ready")
+	}
+	r.mu.Lock()
+	r.leaderID = "node2"
+	r.mu.Unlock()
+	if !r.Ready() {
+		t.Fatal("known leader should make follower Ready")
+	}
+	r.mu.Lock()
+	r.leaderID = "" // election in progress
+	r.mu.Unlock()
+	if r.Ready() {
+		t.Error("cleared leaderID (election) must make Ready false — probe hysteresis covers the flap")
+	}
+}
+
+func TestReady_SnapshotRestartHasHonestIndices(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "raft-ready-snap-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tempDir) })
+
+	logPath := tempDir + "/node.log"
+	statePath := tempDir + "/node.state"
+	snapshotPath := tempDir + "/node.snapshot"
+	applyCh := make(chan ApplyMsg, 4)
+
+	r1 := NewRaft("node1", []string{}, applyCh, logPath, statePath, snapshotPath, nil, nil)
+	r1.mu.Lock()
+	r1.state = Leader
+	r1.currentTerm = 1
+	r1.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		if _, _, ok := r1.AppendCommand([]byte(fmt.Sprintf("cmd%d", i))); !ok {
+			t.Fatalf("AppendCommand %d failed", i)
+		}
+	}
+	r1.TakeSnapshot(3, []byte(`{"Data":{"k":"v"}}`))
+	r1.Stop()
+
+	r2 := NewRaft("node1", []string{}, applyCh, logPath, statePath, snapshotPath, nil, nil)
+	t.Cleanup(func() { r2.Stop() })
+	if r2.needsCatchUp {
+		t.Fatal("snapshot restart should not set needsCatchUp (indices are honest)")
+	}
+	if r2.commitIndex != 3 || r2.lastApplied != 3 {
+		t.Fatalf("expected commit/applied=3 after snapshot restart, got %d/%d", r2.commitIndex, r2.lastApplied)
+	}
+	select {
+	case msg := <-applyCh:
+		if !msg.IsSnapshot || msg.CommandIndex != 3 {
+			t.Fatalf("expected snapshot ApplyMsg at index 3, got %+v", msg)
+		}
+	default:
+		t.Fatal("expected snapshot pushed to applyCh on restart")
+	}
+	if err := r2.StartRPCServer("localhost:0"); err != nil {
+		t.Fatalf("StartRPCServer: %v", err)
+	}
+	if !r2.Ready() {
+		t.Error("single-node snapshot restart should be Ready once listening")
+	}
+}
