@@ -1,0 +1,26 @@
+{{- if .Values.pdb.enabled }}
+{{- /*
+  Quorum math: N voters → majority = ceil((N+1)/2) → max safe unavailable = N - majority.
+  Equivalently, maxUnavailable must be < ceil(N/2). Prefer maxUnavailable over
+  minAvailable: minAvailable:2 at replicaCount:5 silently allows 3 evictions.
+  PDB guards voluntary evictions only (drain); OOM/node crash/delete pod/rolling
+  update bypass it — Ready gate serializes rolling updates.
+*/ -}}
+{{- $n := int .Values.replicaCount -}}
+{{- $maxUnavail := int .Values.pdb.maxUnavailable -}}
+{{- $halfCeil := div (add $n 1) 2 -}}
+{{- if ge $maxUnavail $halfCeil }}
+{{- fail (printf "pdb.maxUnavailable=%d would break quorum at replicaCount=%d (must be < ceil(N/2)=%d)" $maxUnavail $n $halfCeil) }}
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "raft-kv.fullname" . }}
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ $maxUnavail }}
+  selector:
+    matchLabels:
+      {{- include "raft-kv.labels" . | nindent 6 }}
+{{- end }}

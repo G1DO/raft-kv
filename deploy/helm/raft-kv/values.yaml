@@ -57,6 +57,16 @@ resources:
 # Use Go's binary units (MiB), not Kubernetes' Mi.
 gomemlimit: "115MiB"
 
+# PodDisruptionBudget — voluntary disruptions only (kubectl drain, etc.).
+# maxUnavailable:1 stays quorum-safe for any odd N ≥ 3. Prefer this over
+# minAvailable:2, which at replicaCount:5 would allow 3 simultaneous evictions.
+# The template fails install if maxUnavailable ≥ ceil(replicaCount/2).
+# Does NOT cover OOM, node crash, liveness restarts, kubectl delete pod, or
+# StatefulSet rolling updates (Ready gate serializes those).
+pdb:
+  enabled: true
+  maxUnavailable: 1
+
 # The binary traps SIGTERM and steps down (graceful leader handoff), so a short
 # grace period is enough.
 terminationGracePeriodSeconds: 10

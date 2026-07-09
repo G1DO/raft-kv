@@ -209,9 +209,15 @@ The Helm chart therefore sizes each voter deliberately (see
   construction marshals the full KV state, so the limit must leave headroom.
 - **`GOMEMLIMIT` ≈ 90% of the memory limit.** Soft-caps the Go heap so GC prefers
   collecting over growing into a kubelet OOMKill.
+- **PDB `maxUnavailable: 1`.** Caps voluntary disruptions so a drain cannot take
+  the cluster below quorum. Prefer `maxUnavailable` over `minAvailable: 2`
+  (the latter silently allows too many evictions at replicaCount=5). Helm fails
+  if the knob would break quorum (`maxUnavailable ≥ ceil(N/2)`). PDBs do **not**
+  cover OOM, node crashes, liveness restarts, `kubectl delete pod`, or StatefulSet
+  rolling updates — only the Ready gate serializes rolling updates.
 
-Probe mapping (`/healthz` vs `/readyz`), PDB math, and backup/restore are covered
-alongside this policy in ADR-008 (M7).
+Probe mapping (`/healthz` vs `/readyz`), fuller PDB honesty, and backup/restore
+are covered alongside this policy in ADR-008 (M7).
 
 ## Known correctness gaps
 
