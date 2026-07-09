@@ -186,3 +186,37 @@ func TestGetOutOfRange(t *testing.T) {
 		t.Error("expected error for negative index, got nil")
 	}
 }
+
+func TestClose_SyncsAndAllowsReplay(t *testing.T) {
+	path, cleanup := tempLog(t)
+	defer cleanup()
+
+	log1, err := NewLog(path)
+	if err != nil {
+		t.Fatalf("NewLog failed: %v", err)
+	}
+	entry := []byte("PUT foo bar")
+	if _, err := log1.Append(entry); err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+	if err := log1.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	// Idempotent: second Close must not panic or error.
+	if err := log1.Close(); err != nil {
+		t.Fatalf("second Close failed: %v", err)
+	}
+
+	log2, err := NewLog(path)
+	if err != nil {
+		t.Fatalf("NewLog after Close failed: %v", err)
+	}
+	defer log2.Close()
+	recovered, err := log2.Replay()
+	if err != nil {
+		t.Fatalf("Replay failed: %v", err)
+	}
+	if len(recovered) != 1 || !bytes.Equal(recovered[0], entry) {
+		t.Fatalf("expected %q after Close+Replay, got %q", entry, recovered)
+	}
+}

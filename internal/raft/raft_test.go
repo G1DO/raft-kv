@@ -1239,6 +1239,26 @@ func TestConfigChange_Persistence(t *testing.T) {
 	}
 }
 
+func TestStop_ClosesWALIdempotent(t *testing.T) {
+	r := newTestRaft(t, "node1", []string{}, nil)
+	r.mu.Lock()
+	r.state = Leader
+	r.currentTerm = 1
+	r.mu.Unlock()
+	if _, _, ok := r.AppendCommand([]byte("PUT a 1")); !ok {
+		t.Fatal("AppendCommand failed")
+	}
+	r.Stop()
+	r.mu.Lock()
+	if r.persistentLog != nil {
+		r.mu.Unlock()
+		t.Fatal("expected persistentLog nil after Stop")
+	}
+	r.mu.Unlock()
+	// Second Stop must not panic (Cleanup also calls Stop).
+	r.Stop()
+}
+
 func TestReady_FreshBootstrapReady(t *testing.T) {
 	r := newTestRaft(t, "node1", []string{"localhost:9002", "localhost:9003"}, nil)
 	if r.needsCatchUp {

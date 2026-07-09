@@ -1304,7 +1304,8 @@ func (r *Raft) Start() {
 }
 
 // Stop shuts the node down: stops the election and heartbeat timers, steps down
-// to follower, and closes the RPC listener. Safe to call more than once.
+// to follower, closes the RPC listener, and closes the WAL. Safe to call more
+// than once. RaftServer.Shutdown (SIGINT/SIGTERM) goes through here.
 func (r *Raft) Stop() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1317,6 +1318,13 @@ func (r *Raft) Stop() {
 	r.state = Follower
 	if r.listener != nil {
 		r.listener.Close()
+		r.listener = nil
+	}
+	if r.persistentLog != nil {
+		if err := r.persistentLog.Close(); err != nil {
+			r.logger.Warn("wal_close_failed", "node", r.id, "error", err)
+		}
+		r.persistentLog = nil
 	}
 	r.updateMetricsLocked()
 }

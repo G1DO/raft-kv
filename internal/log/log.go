@@ -140,6 +140,24 @@ func (l *Log) Replay() ([][]byte, error) {
 
 }
 
+// Close syncs and closes the underlying file. Safe to call more than once.
+// SIGTERM / Raft.Stop use this so a polite shutdown does not abandon the FD.
+func (l *Log) Close() error {
+	if l == nil || l.file == nil {
+		return nil
+	}
+	syncErr := l.file.Sync()
+	closeErr := l.file.Close()
+	l.file = nil
+	if syncErr != nil {
+		return fmt.Errorf("failed to sync log file: %w", syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("failed to close log file: %w", closeErr)
+	}
+	return nil
+}
+
 //
 // You will implement:
 //   - Append(entry) → index doneeeeeeeeeeee
