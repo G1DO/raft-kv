@@ -198,26 +198,44 @@ every signal.
 
 ## Reliability
 
-Kubernetes can break quorum as easily as a Raft bug if resource policy is wrong.
-The Helm chart therefore sizes each voter deliberately (see
-`deploy/helm/raft-kv/values.yaml`):
+Kubernetes can break quorum as easily as a Raft bug if resource or scaling policy
+is wrong. The Helm chart therefore treats voters as a consensus group, not a
+stateless Deployment (see `deploy/helm/raft-kv/values.yaml`):
 
 - **CPU request, no CPU limit.** Election and heartbeat paths are latency-sensitive;
   CFS throttling under a limit looks like a slow peer and can amplify elections.
-- **Memory request == limit (Guaranteed).** OOM kills bypass PodDisruptionBudgets;
-  during a rolling update an OOM on a second pod is a quorum loss. Snapshot
-  construction marshals the full KV state, so the limit must leave headroom.
+- **Memory request == limit (Guaranteed on the OOM dimension).** OOM kills bypass
+  PodDisruptionBudgets; during a rolling update an OOM on a second pod is a quorum
+  loss. Snapshot construction marshals the full KV state, so the limit must leave
+  headroom.
 - **`GOMEMLIMIT` ≈ 90% of the memory limit.** Soft-caps the Go heap so GC prefers
   collecting over growing into a kubelet OOMKill.
-- **PDB `maxUnavailable: 1`.** Caps voluntary disruptions so a drain cannot take
-  the cluster below quorum. Prefer `maxUnavailable` over `minAvailable: 2`
-  (the latter silently allows too many evictions at replicaCount=5). Helm fails
-  if the knob would break quorum (`maxUnavailable ≥ ceil(N/2)`). PDBs do **not**
-  cover OOM, node crashes, liveness restarts, `kubectl delete pod`, or StatefulSet
-  rolling updates — only the Ready gate serializes rolling updates.
+- **PDB `maxUnavailable: 1`.** Caps **voluntary** disruptions (`kubectl drain`,
+  eviction API) so maintenance cannot take the cluster below quorum. Prefer
+  `maxUnavailable` over `minAvailable: 2` (the latter silently allows too many
+  evictions at `replicaCount=5`). Helm fails if the knob would break quorum
+  (`maxUnavailable ≥ ceil(N/2)`).
+- **No HPA.** More voters ≠ more write throughput — every write still needs a
+  majority. Membership changes are deliberate single-server Raft config changes,
+  not Deployment replica bumps; an autoscaler scale-down can destroy quorum.
+  Read scale-out would need non-voting learners, which this implementation does
+  not have (future work).
 
-Probe mapping (`/healthz` vs `/readyz`), fuller PDB honesty, and backup/restore
-are covered alongside this policy in ADR-008 (M7).
+### What the PDB does not cover
+
+Never claim “PDB prevents quorum loss.” It only bounds **voluntary** multi-pod
+disruption. These bypass it:
+
+| Event | Guard instead |
+|-------|----------------|
+| OOM kill | Memory request==limit + `GOMEMLIMIT` |
+| Node crash / power loss | Replication + PVC rejoin |
+| Liveness restart | Dumb `/healthz` (never leadership / `Ready()`) |
+| `kubectl delete pod` | Operator discipline; not the eviction API |
+| StatefulSet rolling update | **Ready gate** (`/readyz`), not the PDB — updates do not go through eviction |
+
+Probe mapping (`/healthz` vs `/readyz`) and backup/restore are covered alongside
+this policy in ADR-008 (M7).
 
 ## Known correctness gaps
 

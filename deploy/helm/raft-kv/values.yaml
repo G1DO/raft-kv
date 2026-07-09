@@ -7,9 +7,11 @@
 # cluster is a single-value change rather than a manual edit of the peer string.
 #
 # Run an ODD count (3, 5, 7) so a majority quorum is unambiguous. A consensus
-# group is NOT a stateless service: more voters do not add throughput, and
-# membership changes are deliberate — treat this as a deploy-time decision, not
-# an autoscale target.
+# group is NOT a stateless service: more voters do not add throughput (every
+# write still hits a majority), membership changes are deliberate one-at-a-time
+# Raft config changes, and an HPA scale-down can destroy quorum — treat
+# replicaCount as a deploy-time decision, not an autoscale target. No HPA
+# template ships with this chart (see docs/design.md#reliability).
 replicaCount: 3
 
 image:

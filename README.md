@@ -514,6 +514,30 @@ tick, a commit-latency spike, the `election_won` log line, and the slow request'
 
 ---
 
+## Reliability
+
+The Helm chart (`deploy/helm/raft-kv`) treats the StatefulSet as a **consensus
+group**, not a horizontally scalable web tier. Details and rationale live in
+[docs/design.md](docs/design.md#reliability); the short version:
+
+- **Probes** — `startup`/`liveness` hit `/healthz` (process alive; never leadership).
+  `readiness` hits `/readyz` → `Raft.Ready()` with probe hysteresis so elections
+  do not flap endpoints.
+- **Resources** — CPU **request only** (no limit: throttling elections is an
+  availability risk). Memory request == limit, plus `GOMEMLIMIT` ≈ 90% of that
+  limit so snapshot GC does not OOMKill a voter.
+- **PDB** — `maxUnavailable: 1` so a `kubectl drain` cannot voluntarily remove
+  enough pods to break quorum. Helm refuses a knob that would
+  (`maxUnavailable ≥ ceil(replicaCount/2)`). PDBs do **not** stop OOM, node
+  crashes, liveness restarts, `kubectl delete pod`, or StatefulSet rolling
+  updates — rolling updates are serialized by the Ready gate, not the PDB.
+- **No HPA** — more voters do not increase write throughput (every write still
+  needs a majority), and autoscaler scale-down can destroy quorum. Membership
+  changes are deliberate one-at-a-time Raft config changes. Read replicas would
+  need non-voting learners (not implemented).
+
+---
+
 ## Testing
 
 ```bash
