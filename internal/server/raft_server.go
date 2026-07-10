@@ -19,9 +19,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/G1DO/raft-kv2/internal/kv"
-	"github.com/G1DO/raft-kv2/internal/metrics"
-	"github.com/G1DO/raft-kv2/internal/raft"
+	"github.com/G1DO/raft-kv/internal/kv"
+	"github.com/G1DO/raft-kv/internal/metrics"
+	"github.com/G1DO/raft-kv/internal/raft"
 )
 
 // commitWait bounds how long a client write/read blocks for its entry to commit

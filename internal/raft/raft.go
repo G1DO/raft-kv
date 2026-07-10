@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/G1DO/raft-kv2/internal/log"
-	"github.com/G1DO/raft-kv2/internal/metrics"
+	"github.com/G1DO/raft-kv/internal/log"
+	"github.com/G1DO/raft-kv/internal/metrics"
 )
 
 type State int

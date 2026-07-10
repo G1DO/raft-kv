@@ -22,7 +22,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/G1DO/raft-kv2
+    repoURL: https://github.com/G1DO/raft-kv
     targetRevision: main
     path: deploy/observability
     helm:

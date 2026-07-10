@@ -367,7 +367,7 @@ gracefully on SIGINT/SIGTERM (step down, close listener).
 ## Verifying the published image
 
 CI builds a distroless image and publishes it to
-[`ghcr.io/g1do/raft-kv`](https://github.com/G1DO/raft-kv2/pkgs/container/raft-kv) on every
+[`ghcr.io/g1do/raft-kv`](https://github.com/G1DO/raft-kv/pkgs/container/raft-kv) on every
 push to `main` and every `v*` tag. Each published image is **signed** with
 [cosign](https://github.com/sigstore/cosign) and carries a **SLSA build-provenance** and an
 **SPDX SBOM** attestation. All three are *keyless*: GitHub mints a short-lived OIDC token,
@@ -391,7 +391,7 @@ Requires **cosign v3+** (CI signs with v3.0.6):
 
 ```bash
 cosign verify \
-  --certificate-identity-regexp '^https://github.com/G1DO/raft-kv2/\.github/workflows/image\.yml@' \
+  --certificate-identity-regexp '^https://github.com/G1DO/raft-kv/\.github/workflows/image\.yml@' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   "$REF"
 ```
@@ -405,8 +405,8 @@ push), so a valid signature comes from a release run.
 
 ```bash
 gh attestation verify "oci://$REF" \
-  --repo G1DO/raft-kv2 \
-  --signer-workflow G1DO/raft-kv2/.github/workflows/image.yml
+  --repo G1DO/raft-kv \
+  --signer-workflow G1DO/raft-kv/.github/workflows/image.yml
 ```
 
 `gh attestation verify` defaults to the SLSA provenance predicate
@@ -421,8 +421,8 @@ type:
 
 ```bash
 gh attestation verify "oci://$REF" \
-  --repo G1DO/raft-kv2 \
-  --signer-workflow G1DO/raft-kv2/.github/workflows/image.yml \
+  --repo G1DO/raft-kv \
+  --signer-workflow G1DO/raft-kv/.github/workflows/image.yml \
   --predicate-type "$SPDX_URI"
 ```
 
