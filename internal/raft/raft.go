@@ -85,8 +85,9 @@ type Raft struct {
 	// needsCatchUp is set on restart when a non-empty WAL was replayed but
 	// commitIndex/lastApplied are still 0 (not persisted). Ready() must not
 	// treat 0>=0 as "caught up" while the state machine is still empty.
-	// Cleared once entries are applied, a snapshot is installed, or we become
-	// leader. Fresh bootstrap (empty disk) leaves this false.
+	// Cleared once entries are applied or a snapshot is installed — not on
+	// becomeLeader (the no-op must commit/apply first). Fresh bootstrap
+	// (empty disk) leaves this false.
 	needsCatchUp bool
 
 	logger *slog.Logger

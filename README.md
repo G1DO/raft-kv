@@ -517,8 +517,12 @@ tick, a commit-latency spike, the `election_won` log line, and the slow request'
 ## Reliability
 
 The Helm chart (`deploy/helm/raft-kv`) treats the StatefulSet as a **consensus
-group**, not a horizontally scalable web tier. Details and rationale live in
-[docs/design.md](docs/design.md#reliability); the short version:
+group**, not a horizontally scalable web tier. Rationale and rejected
+alternatives:
+[docs/design.md](docs/design.md#reliability),
+[ADR-008](docs/decisions/ADR-008-quorum-aware-reliability.md).
+Backup/restore (wipe vs disaster) and measured MTTR:
+[docs/runbooks/restore.md](docs/runbooks/restore.md).
 
 - **Probes** — `startup`/`liveness` hit `/healthz` (process alive; never leadership).
   `readiness` hits `/readyz` → `Raft.Ready()` with probe hysteresis so elections
@@ -643,6 +647,11 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
   - [ADR-002](docs/decisions/ADR-002-readindex-vs-leases.md) — ReadIndex vs. lease-based reads
   - [ADR-003](docs/decisions/ADR-003-json-tcp-vs-grpc.md) — hand-rolled JSON-over-TCP vs. gRPC
   - [ADR-004](docs/decisions/ADR-004-panic-on-corrupt-file.md) — panic vs. return-error on corrupt persistent file
+  - [ADR-005](docs/decisions/ADR-005-monorepo-vs-config-repo.md) — monorepo vs. separate config repo
+  - [ADR-006](docs/decisions/ADR-006-policy-controller-vs-kyverno.md) — sigstore policy-controller vs. Kyverno
+  - [ADR-007](docs/decisions/ADR-007-otel-vs-zero-dep-tracing.md) — OpenTelemetry vs. strictly zero-dep tracing
+  - [ADR-008](docs/decisions/ADR-008-quorum-aware-reliability.md) — quorum-aware probes, PDB, resources
+- [docs/runbooks/restore.md](docs/runbooks/restore.md) — backup / wipe / disaster restore + MTTR
 - [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; what M8's mTLS work will fix.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured election MTTR, throughput, and quorum-loss behaviour, with the exact method.
 

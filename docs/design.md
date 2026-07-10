@@ -234,8 +234,11 @@ disruption. These bypass it:
 | `kubectl delete pod` | Operator discipline; not the eviction API |
 | StatefulSet rolling update | **Ready gate** (`/readyz`), not the PDB — updates do not go through eviction |
 
-Probe mapping (`/healthz` vs `/readyz`) and backup/restore are covered alongside
-this policy in ADR-008 (M7).
+Probe mapping (`/healthz` vs `/readyz`), PDB honesty, and resource policy —
+including rejected alternatives — are in
+[ADR-008](decisions/ADR-008-quorum-aware-reliability.md).
+Operator backup/restore (quiesced follower, wipe vs disaster, measured MTTR):
+[runbooks/restore.md](runbooks/restore.md).
 
 ## Known correctness gaps
 
