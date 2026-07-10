@@ -254,7 +254,9 @@ wait_pod_ready() {
   local target=$1
   local i ready
   echo "==> waiting for $target Ready"
-  for i in $(seq 1 90); do
+  # Disaster restore can sit NotReady through election + no-op commit + DNS
+  # settle; budget ~6 minutes (180 × 2s).
+  for i in $(seq 1 180); do
     ready=$(kubectl -n "$NS" get pod "$target" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null || echo false)
     if [[ "$ready" == "true" ]]; then
       echo "    $target Ready after ~$((i * 2))s"
