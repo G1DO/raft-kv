@@ -12,7 +12,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/G1DO/raft-kv/internal/server"
+	"github.com/G1DO/raft-kv2/internal/server"
 )
 
 func main() {

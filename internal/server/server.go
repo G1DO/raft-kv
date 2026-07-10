@@ -7,8 +7,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/G1DO/raft-kv/internal/kv"
-	"github.com/G1DO/raft-kv/internal/log"
+	"github.com/G1DO/raft-kv2/internal/kv"
+	"github.com/G1DO/raft-kv2/internal/log"
 )
 
 type Server struct {

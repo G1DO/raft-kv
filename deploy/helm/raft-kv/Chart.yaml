@@ -8,9 +8,9 @@ type: application
 # Chart version — bump on chart changes. appVersion tracks the shipped image.
 version: 0.1.0
 appVersion: "0.1.0"
-home: https://github.com/G1DO/raft-kv
+home: https://github.com/G1DO/raft-kv2
 sources:
-  - https://github.com/G1DO/raft-kv
+  - https://github.com/G1DO/raft-kv2
 keywords:
   - raft
   - consensus

@@ -40,7 +40,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 LABEL org.opencontainers.image.title="raft-kv" \
       org.opencontainers.image.description="Distributed key-value store on a from-scratch Raft implementation" \
-      org.opencontainers.image.source="https://github.com/G1DO/raft-kv"
+      org.opencontainers.image.source="https://github.com/G1DO/raft-kv2"
 
 COPY --from=build /out/raft-kv /raft-kv
 COPY --from=build --chown=65532:65532 /data /data

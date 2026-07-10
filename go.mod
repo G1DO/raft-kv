@@ -1,4 +1,4 @@
-module github.com/G1DO/raft-kv
+module github.com/G1DO/raft-kv2
 
 go 1.25.11
 

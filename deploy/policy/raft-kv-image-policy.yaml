@@ -50,7 +50,7 @@ spec:
           # that Fulcio validates, and the subject regexp pins it to THIS repo's image.yml
           # workflow. A signature from another workflow, repo, or issuer fails to match.
           - issuer: https://token.actions.githubusercontent.com
-            subjectRegExp: '^https://github.com/G1DO/raft-kv/\.github/workflows/image\.yml@.*$'
+            subjectRegExp: '^https://github.com/G1DO/raft-kv2/\.github/workflows/image\.yml@.*$'
       # Require the signature's inclusion proof in the public Rekor transparency log.
       ctlog:
         url: https://rekor.sigstore.dev

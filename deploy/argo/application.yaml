@@ -30,7 +30,7 @@ spec:
   project: default
   source:
     # Uppercase G1DO: GitHub org/repo casing (verified against Chart.yaml + README).
-    repoURL: https://github.com/G1DO/raft-kv
+    repoURL: https://github.com/G1DO/raft-kv2
     targetRevision: main
     # Argo auto-detects this is a Helm chart from the Chart.yaml at this path.
     path: deploy/helm/raft-kv
