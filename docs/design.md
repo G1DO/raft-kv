@@ -234,6 +234,30 @@ disruption. These bypass it:
 | `kubectl delete pod` | Operator discipline; not the eviction API |
 | StatefulSet rolling update | **Ready gate** (`/readyz`), not the PDB — updates do not go through eviction |
 
+### Binary upgrades (one-pod canary)
+
+The chart sets `updateStrategy.type: RollingUpdate` explicitly
+(`deploy/helm/raft-kv/values.yaml`). With `partition: 0` (default), Kubernetes
+updates pods one at a time in reverse ordinal order and waits for each to become
+Ready — that Ready gate is the real safety rail, not the PDB.
+
+For a manual canary on a 3-voter cluster:
+
+```bash
+# 1) Only raft-kv-2 may take the new image
+helm upgrade raft-kv ./deploy/helm/raft-kv \
+  --set image.tag=<new> --set updateStrategy.rollingUpdate.partition=2
+# watch: kubectl get pods -l app=raft-kv -w
+# 2) Then raft-kv-1, then everyone
+helm upgrade raft-kv ./deploy/helm/raft-kv --reuse-values \
+  --set updateStrategy.rollingUpdate.partition=1
+helm upgrade raft-kv ./deploy/helm/raft-kv --reuse-values \
+  --set updateStrategy.rollingUpdate.partition=0
+```
+
+**Argo Rollouts:** parked. It does not natively manage StatefulSets; adopting it
+would be workload-type surgery, out of M7 scope.
+
 Probe mapping (`/healthz` vs `/readyz`), PDB honesty, and resource policy —
 including rejected alternatives — are in
 [ADR-008](decisions/ADR-008-quorum-aware-reliability.md).

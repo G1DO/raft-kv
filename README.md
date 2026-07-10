@@ -539,6 +539,9 @@ Backup/restore (wipe vs disaster) and measured MTTR:
   needs a majority), and autoscaler scale-down can destroy quorum. Membership
   changes are deliberate one-at-a-time Raft config changes. Read replicas would
   need non-voting learners (not implemented).
+- **Rolling updates** — explicit `RollingUpdate`; optional `partition` for a
+  one-pod canary. Serialized by `/readyz`, not the PDB. See
+  [design.md](docs/design.md#binary-upgrades-one-pod-canary).
 
 ---
 

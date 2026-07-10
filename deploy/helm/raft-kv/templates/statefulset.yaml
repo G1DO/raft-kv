@@ -10,6 +10,12 @@ spec:
   # Quorum needs the members up together; OrderedReady (the default) would block
   # pod-1 until pod-0 is Ready, but a lone pod-0 cannot reach quorum on its own.
   podManagementPolicy: Parallel
+  updateStrategy:
+    type: {{ .Values.updateStrategy.type }}
+    {{- if eq .Values.updateStrategy.type "RollingUpdate" }}
+    rollingUpdate:
+      partition: {{ .Values.updateStrategy.rollingUpdate.partition }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "raft-kv.labels" . | nindent 6 }}

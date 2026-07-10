@@ -14,6 +14,17 @@
 # template ships with this chart (see docs/design.md#reliability).
 replicaCount: 3
 
+# Binary upgrade path. RollingUpdate is the Kubernetes default; we set it
+# explicitly so operators can pin a canary with rollingUpdate.partition.
+# Updates proceed one pod at a time in reverse ordinal order and wait on the
+# Ready gate (/readyz) — the PDB does not serialize rolls (eviction API only).
+# Manual canary (N=3): bump image.tag with partition=2 → watch raft-kv-2 →
+# partition=1 → partition=0. Argo Rollouts is parked (no native StatefulSet).
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    partition: 0
+
 image:
   repository: raft-kv
   tag: dev
