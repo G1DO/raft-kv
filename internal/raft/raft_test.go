@@ -1539,3 +1539,49 @@ func TestReady_SnapshotRestartHasHonestIndices(t *testing.T) {
 		t.Error("single-node snapshot restart should be Ready once listening")
 	}
 }
+
+// Truncating a longer local log to match the leader must clamp commit/applied
+// back onto the new tip. Otherwise lastApplied > commitIndex and applyCommitted
+// never runs — client writes hang waiting for apply.
+func TestAppendEntries_TruncateClampsAppliedPastTip(t *testing.T) {
+	r := newTestRaft(t, "n1", []string{"localhost:9"}, nil)
+	r.mu.Lock()
+	r.currentTerm = 5
+	r.state = Leader
+	r.leaderID = r.id
+	r.log = []LogEntry{
+		{Term: 1, Command: []byte("a")},
+		{Term: 2, Command: []byte("b")},
+		{Term: 3, Command: []byte("c")},
+		{Term: 4, Command: []byte("d")},
+		{Term: 5, Command: []byte("e")},
+	}
+	r.commitIndex = 5
+	r.lastApplied = 5
+	r.mu.Unlock()
+
+	args := &AppendEntriesArgs{
+		Term:         6,
+		LeaderID:     "leader",
+		PrevLogIndex: 2,
+		PrevLogTerm:  2,
+		Entries:      []LogEntry{{Term: 6, Command: []byte("x")}},
+		LeaderCommit: 2,
+	}
+	reply := &AppendEntriesReply{}
+	r.AppendEntries(args, reply)
+	if !reply.Success {
+		t.Fatal("expected success")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.log) != 3 {
+		t.Fatalf("expected log len 3 after truncate+append, got %d", len(r.log))
+	}
+	if r.commitIndex > len(r.log) {
+		t.Fatalf("commitIndex %d past tip %d", r.commitIndex, len(r.log))
+	}
+	if r.lastApplied > r.commitIndex {
+		t.Fatalf("lastApplied %d > commitIndex %d after truncate", r.lastApplied, r.commitIndex)
+	}
+}

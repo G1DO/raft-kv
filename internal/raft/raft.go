@@ -856,6 +856,17 @@ func (r *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	// First, remove any conflicting entries after PrevLogIndex
 	if args.PrevLogIndex < len(r.log) {
 		r.log = r.log[:args.PrevLogIndex] // truncate
+		// Truncation can leave commit/applied past the new tip (e.g. this node
+		// was briefly ahead, then accepted a shorter leader log). Clamp so
+		// applyCommitted can make progress again — otherwise lastApplied >
+		// commitIndex makes the apply loop a no-op and client writes hang.
+		lastIdx := r.lastIncludedIndex + len(r.log)
+		if r.commitIndex > lastIdx {
+			r.commitIndex = lastIdx
+		}
+		if r.lastApplied > r.commitIndex {
+			r.lastApplied = r.commitIndex
+		}
 	}
 	// Then append the new entries
 	r.log = append(r.log, args.Entries...)
