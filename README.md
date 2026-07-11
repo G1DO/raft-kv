@@ -656,6 +656,7 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
   - [ADR-008](docs/decisions/ADR-008-quorum-aware-reliability.md) — quorum-aware probes, PDB, resources
   - [ADR-009](docs/decisions/ADR-009-mtls-peer-identity.md) — peer mTLS cert/identity (Vault PKI + per-ordinal SANs)
   - [ADR-010](docs/decisions/ADR-010-mtls-rollout.md) — peer mTLS fail-closed rollout (no plaintext fallback)
+  - [ADR-011](docs/decisions/ADR-011-networkpolicy-boundary.md) — NetworkPolicy client/peer/metrics boundary
 - [docs/runbooks/restore.md](docs/runbooks/restore.md) — backup / wipe / disaster restore + MTTR
 - [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; what M8's mTLS work will fix.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured election MTTR, throughput, and quorum-loss behaviour, with the exact method.
