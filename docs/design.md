@@ -297,6 +297,7 @@ These are real and deliberate. Listed here so reviewers don't have to find them 
 | Peer transport | Hand-rolled JSON-over-TCP | gRPC | [ADR-003](decisions/ADR-003-json-tcp-vs-grpc.md) |
 | Corrupt persistent file on boot | Panic | Return error and continue | [ADR-004](decisions/ADR-004-panic-on-corrupt-file.md) |
 | Peer mTLS identity | Vault PKI + per-ordinal DNS SANs (ESO delivery) | Shared/wildcard cluster cert | [ADR-009](decisions/ADR-009-mtls-peer-identity.md) |
+| Peer mTLS rollout | Fail closed when mounts missing; plaintext only if TLS unset | Silent TLS→plaintext fallback | [ADR-010](decisions/ADR-010-mtls-rollout.md) |
 
 ## What I learned (cross-reference)
 

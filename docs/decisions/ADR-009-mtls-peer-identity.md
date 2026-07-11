@@ -25,8 +25,8 @@ identity to that member — not to “any pod in the release.”
 M8 Phase A implements the transport; Phase B delivers material via Vault +
 External Secrets Operator (ESO). This ADR locks the **identity and material
 contract** before either phase writes code. Rollout / fail-closed behaviour
-is D2 (mTLS rollout and failure mode — separate decision); this document only
-defines what a correct peer certificate *is*.
+is [ADR-010](ADR-010-mtls-rollout.md) (rollout and failure mode); this document
+only defines what a correct peer certificate *is*.
 
 ## Decision
 
@@ -94,8 +94,8 @@ command-line arguments, Helm `--set` values, logs, or docs fixtures.
 - Peers trust only this CA for Raft RPC. System roots are not used for peer
   verification.
 - CA compromise implies full peer-impersonation risk; rotation and dual-trust
-  windows are owned by **D2** / Phase B rotation drill (#9), not claimed here
-  as already supported.
+  windows are owned by [ADR-010](ADR-010-mtls-rollout.md) / Phase B rotation
+  drill (#9), not claimed here as already supported.
 
 ### TTL and renewal
 
@@ -110,9 +110,9 @@ command-line arguments, Helm `--set` values, logs, or docs fixtures.
 
 | Environment | Mode |
 |-------------|------|
-| Unit / integration tests | May use an explicit plaintext transport **only if D2 records that escape hatch**; never the Helm production default |
+| Unit / integration tests | May use plaintext when TLS config is **unset** ([ADR-010](ADR-010-mtls-rollout.md)); never the Helm production default |
 | Local kind / `cluster-up.sh` | Prefer a **scripted self-signed CA** that issues the same per-ordinal SAN set as Vault would; mount files via the same path contract so the binary path matches production |
-| Helm chart (Kubernetes) | mTLS **on by default**; missing CA/cert/key must fail closed (D2) — no silent downgrade to plaintext |
+| Helm chart (Kubernetes) | mTLS **on by default**; missing CA/cert/key must fail closed ([ADR-010](ADR-010-mtls-rollout.md)) — no silent downgrade to plaintext |
 
 ### Binding summary
 
@@ -148,8 +148,8 @@ only.
 ## Consequences
 
 - Phase A (#1–#6) implements TLS dial/listen and SAN↔peer checks against this
-  contract; production chart enables mTLS by default once D2’s fail-closed
-  rule is set.
+  contract; production chart enables mTLS by default under
+  [ADR-010](ADR-010-mtls-rollout.md)’s fail-closed rule.
 - Phase B (#7–#10) adds Vault PKI + ESO templates that produce
   `<fullname>-N-tls` Secrets with the three keys above; rotation drill states
   restart-required until proven otherwise.
