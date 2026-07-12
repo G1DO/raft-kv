@@ -39,7 +39,7 @@ echo "==> installing the Helm chart ($RELEASE)"
 # (scripts/gen-ordinal-tls-secrets.sh); production uses Helm tls.eso.enabled + Vault.
 # --wait blocks until the StatefulSet's pods are Ready (replaces a separate
 # rollout-status step); --install makes the first run and re-runs idempotent.
-./scripts/gen-ordinal-tls-secrets.sh --name "$RELEASE" --replicas 3
+./scripts/gen-ordinal-tls-secrets.sh --name "$RELEASE" --replicas 3 --ca-dir data/lab-ca
 helm upgrade --install "$RELEASE" "$CHART" --wait --timeout 120s
 
 echo
@@ -48,3 +48,4 @@ echo
 echo "cluster up. Try:"
 echo "  kubectl logs raft-kv-0                       # watch elections / replication"
 echo "  kubectl port-forward pod/raft-kv-0 8080:8080 # then talk the KV text protocol"
+echo "  ./scripts/tls-rotation-drill.sh              # Phase B #9 leaf cert rotation drill"

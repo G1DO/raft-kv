@@ -5,7 +5,8 @@ reads files from mounts ([ADR-009](../decisions/ADR-009-mtls-peer-identity.md));
 this runbook covers delivery, renewal, and revocation.
 
 **Lab / kind without Vault:** [`scripts/gen-ordinal-tls-secrets.sh`](../../scripts/gen-ordinal-tls-secrets.sh)
-then `helm install` with default `tls.eso.enabled=false`.
+then `helm install` with default `tls.eso.enabled=false`. Leaf rotation drill:
+[`scripts/tls-rotation-drill.sh`](../../scripts/tls-rotation-drill.sh).
 
 **Bootstrap (one-time):** [`deploy/platform/tls-delivery/README.md`](../../deploy/platform/tls-delivery/README.md)
 
@@ -20,6 +21,39 @@ then `helm install` with default `tls.eso.enabled=false`.
 - [ ] Vault Kubernetes-auth role bound to SA `raft-kv-eso` in namespace `raft-kv`
 - [ ] ESO RBAC in `raft-kv` (chart `tls.eso.rbac.create` or example manifest)
 - [ ] Helm: `tls.eso.enabled=true` with server / path / role refs (no PEMs in values)
+
+---
+
+## Rotation drill (Phase B #9)
+
+**Verified:** leaf renewal under the **same CA** works with a **pod restart**; there is
+**no in-process TLS reload** (`SetTLSConfig` / `loadMTLS` run at startup only —
+see `TestTLS_NoInProcessReload` in `internal/raft/tls_config_test.go`).
+
+**CA dual-trust rotation:** not exercised; not claimed in M8 ([ADR-010](decisions/ADR-010-mtls-rollout.md)).
+
+### Kind / lab (scripted)
+
+After `./scripts/k8s-up.sh` (persists lab CA under `data/lab-ca/`):
+
+```bash
+./scripts/tls-rotation-drill.sh
+# optional: --ordinal 2 --namespace default --name raft-kv
+```
+
+The drill:
+
+1. Records the follower cert serial in Secret `raft-kv-N-tls`
+2. Re-issues that ordinal with the **same** lab CA (`--ca-dir data/lab-ca`)
+3. Restarts **only** pod `raft-kv-N`
+4. `PUT`/`GET` through `raft-kv-0` to prove quorum + mTLS still work
+
+### Production (Vault / ESO)
+
+1. Let ESO refresh the Secret (or force-sync — see [Forced renewal](#forced-renewal-operator))
+2. `kubectl delete pod -n raft-kv raft-kv-N` — **restart required**
+3. Wait `/readyz`; repeat one ordinal at a time
+4. Confirm new cert serial in Secret and healthy peer RPC
 
 ---
 

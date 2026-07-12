@@ -103,6 +103,53 @@ func TestRaft_SetTLSConfig(t *testing.T) {
 	}
 }
 
+// TestTLS_NoInProcessReload documents Phase B #9: PEM files are read once in
+// SetTLSConfig; overwriting paths on disk does not update r.mtls until restart.
+func TestTLS_NoInProcessReload(t *testing.T) {
+	dir := t.TempDir()
+	r := NewRaft("n1", nil, nil, filepath.Join(dir, "log"), filepath.Join(dir, "state"), filepath.Join(dir, "snap"), nil, nil)
+	defer r.Stop()
+
+	caPath := filepath.Join(dir, "ca.crt")
+	caDER, caKey := mustGenCA(t)
+	mustWritePEM(t, caPath, "CERTIFICATE", caDER)
+
+	certPath, keyPath := mustGenLeaf(t, dir, "leaf", caDER, caKey)
+	if err := r.SetTLSConfig(&TLSConfig{CertFile: certPath, KeyFile: keyPath, CAFile: caPath}); err != nil {
+		t.Fatal(err)
+	}
+
+	r.mu.Lock()
+	first := append([]byte(nil), r.mtls.cert.Certificate[0]...)
+	r.mu.Unlock()
+
+	renewCert, renewKey := mustGenLeaf(t, dir, "leaf-renewed", caDER, caKey)
+	renewDER, err := os.ReadFile(renewCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewKeyPEM, err := os.ReadFile(renewKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(certPath, renewDER, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, renewKeyPEM, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	r.mu.Lock()
+	still := r.mtls.cert.Certificate[0]
+	r.mu.Unlock()
+	if string(still) == string(renewDER) {
+		t.Fatal("expected in-memory cert unchanged after on-disk overwrite without SetTLSConfig")
+	}
+	if string(still) != string(first) {
+		t.Fatal("in-memory cert should remain the originally loaded leaf")
+	}
+}
+
 func mustWrite(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {

@@ -11,15 +11,17 @@
 # Usage:
 #   ./scripts/gen-ordinal-tls-secrets.sh
 #   ./scripts/gen-ordinal-tls-secrets.sh --namespace raft-kv --name raft-kv --replicas 3
+#   ./scripts/gen-ordinal-tls-secrets.sh --ordinal 1 --ca-dir data/lab-ca --name raft-kv
 #
-# Requires: openssl, kubectl. Writes a throwaway CA under a temp dir (deleted on exit
-# unless --keep-dir is set).
+# --ca-dir persists the lab CA between runs (required for leaf rotation drill #9).
+# Requires: openssl, kubectl.
 set -euo pipefail
 
 NAME=raft-kv
 NAMESPACE=default
 REPLICAS=3
-KEEP_DIR=
+ORDINAL=
+CA_DIR=
 TTL_DAYS=7
 
 while [[ $# -gt 0 ]]; do
@@ -27,9 +29,10 @@ while [[ $# -gt 0 ]]; do
     --name) NAME=$2; shift 2 ;;
     --namespace|-n) NAMESPACE=$2; shift 2 ;;
     --replicas) REPLICAS=$2; shift 2 ;;
-    --keep-dir) KEEP_DIR=$2; shift 2 ;;
+    --ordinal) ORDINAL=$2; shift 2 ;;
+    --ca-dir) CA_DIR=$2; shift 2 ;;
     -h|--help)
-      sed -n '2,18p' "$0"
+      sed -n '2,20p' "$0"
       exit 0
       ;;
     *)
@@ -44,33 +47,44 @@ if ! command -v openssl >/dev/null || ! command -v kubectl >/dev/null; then
   exit 1
 fi
 
-WORKDIR=${KEEP_DIR:-$(mktemp -d)}
-cleanup() {
-  if [[ -z "${KEEP_DIR}" ]]; then
-    rm -rf "$WORKDIR"
+if [[ -n "$ORDINAL" ]]; then
+  if [[ "$ORDINAL" -lt 0 ]] || [[ "$ORDINAL" -ge "$REPLICAS" ]]; then
+    echo "--ordinal $ORDINAL out of range for replicas=$REPLICAS" >&2
+    exit 1
   fi
-}
-trap cleanup EXIT
+fi
 
-mkdir -p "$WORKDIR"
-CA_KEY="$WORKDIR/ca.key"
-CA_CRT="$WORKDIR/ca.crt"
+if [[ -z "$CA_DIR" ]]; then
+  WORKDIR=$(mktemp -d)
+  trap 'rm -rf "$WORKDIR"' EXIT
+  CA_DIR="$WORKDIR"
+else
+  mkdir -p "$CA_DIR"
+fi
 
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout "$CA_KEY" -out "$CA_CRT" -days 3650 \
-  -subj "/CN=raft-kv-lab-ca" >/dev/null 2>&1
+CA_KEY="$CA_DIR/ca.key"
+CA_CRT="$CA_DIR/ca.crt"
 
-echo "==> lab CA in $WORKDIR (not for production)"
+if [[ -f "$CA_KEY" && -f "$CA_CRT" ]]; then
+  echo "==> reusing lab CA from $CA_DIR"
+else
+  echo "==> generating lab CA in $CA_DIR (not for production)"
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$CA_KEY" -out "$CA_CRT" -days 3650 \
+    -subj "/CN=raft-kv-lab-ca" >/dev/null 2>&1
+fi
+
 kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create namespace "$NAMESPACE"
 
-for ((i = 0; i < REPLICAS; i++)); do
-  POD="${NAME}-${i}"
-  SHORT="${POD}.${NAME}"
-  SECRET="${POD}-tls"
-  KEY="$WORKDIR/${POD}.key"
-  CSR="$WORKDIR/${POD}.csr"
-  CRT="$WORKDIR/${POD}.crt"
-  EXT="$WORKDIR/${POD}.ext"
+issue_ordinal() {
+  local i=$1
+  local POD="${NAME}-${i}"
+  local SHORT="${POD}.${NAME}"
+  local SECRET="${POD}-tls"
+  local KEY="$CA_DIR/${POD}.key"
+  local CSR="$CA_DIR/${POD}.csr"
+  local CRT="$CA_DIR/${POD}.crt"
+  local EXT="$CA_DIR/${POD}.ext"
 
   cat >"$EXT" <<EOF
 subjectAltName=DNS:${SHORT},DNS:${SHORT}.${NAMESPACE}.svc,DNS:${SHORT}.${NAMESPACE}.svc.cluster.local
@@ -92,6 +106,14 @@ EOF
     --dry-run=client -o yaml | kubectl apply -f -
 
   echo "    Secret/${SECRET} (SANs: ${SHORT}, …)"
-done
+}
+
+if [[ -n "$ORDINAL" ]]; then
+  issue_ordinal "$ORDINAL"
+else
+  for ((i = 0; i < REPLICAS; i++)); do
+    issue_ordinal "$i"
+  done
+fi
 
 echo "==> done. Install/upgrade the chart with tls.enabled=true (default)."
