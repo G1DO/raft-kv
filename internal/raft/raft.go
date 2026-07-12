@@ -97,6 +97,8 @@ type Raft struct {
 	// Peer mTLS (ADR-009/010). Nil paths / nil mtls => plaintext peer RPC.
 	tlsConfig *TLSConfig
 	mtls      *mtlsState // loaded when tlsConfig is enabled; used by listen/dial only
+	// peerAddrByID maps Raft member id -> raft dial address (for SAN checks, ADR-009 #3).
+	peerAddrByID map[string]string
 }
 
 // SetTLSConfig stores validated peer-TLS paths and loads PEM material.
@@ -138,6 +140,36 @@ func (r *Raft) peerMTLS() *mtlsState {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.mtls
+}
+
+// SetPeerIdentities records id -> raft address for mTLS SAN binding (ADR-009).
+// Pass nil or empty to clear. Safe to call before StartRPCServer; membership
+// changes also update this map in applyConfigChange.
+func (r *Raft) SetPeerIdentities(idToAddr map[string]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(idToAddr) == 0 {
+		r.peerAddrByID = nil
+		return
+	}
+	cp := make(map[string]string, len(idToAddr))
+	for id, addr := range idToAddr {
+		cp[id] = addr
+	}
+	r.peerAddrByID = cp
+}
+
+func (r *Raft) peerIdentities() map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.peerAddrByID) == 0 {
+		return nil
+	}
+	cp := make(map[string]string, len(r.peerAddrByID))
+	for id, addr := range r.peerAddrByID {
+		cp[id] = addr
+	}
+	return cp
 }
 
 // NewRaft creates a new Raft node
@@ -1075,18 +1107,32 @@ func (r *Raft) StartRPCServer(addr string) error {
 	return nil
 }
 
-// handleRPC processes one incoming RPC request
+// handleRPC processes one incoming RPC request.
+// Under mTLS, the client certificate SAN must match the claimed sender id
+// (CandidateID / LeaderID) before any Raft handler runs (ADR-009 #3).
 func (r *Raft) handleRPC(conn net.Conn) {
 	defer conn.Close()
 
-	// Decode the incoming message
 	decoder := json.NewDecoder(conn)
 	var msg RPCMessage
 	if err := decoder.Decode(&msg); err != nil {
 		return
 	}
 
-	// Route to the right handler based on Type
+	if r.peerMTLS() != nil {
+		claimed := claimedRPCSender(msg)
+		cert := clientLeafCert(conn)
+		if claimed == "" || cert == nil || !certMatchesIdentity(cert, claimed, r.peerIdentities()) {
+			r.logger.Warn("rpc_identity_rejected",
+				"node", r.id,
+				"rpc", msg.Type,
+				"claimed", claimed,
+				"remote", conn.RemoteAddr().String(),
+			)
+			return
+		}
+	}
+
 	var response RPCResponse
 
 	switch msg.Type {
@@ -1112,7 +1158,6 @@ func (r *Raft) handleRPC(conn net.Conn) {
 		response.Data, _ = json.Marshal(reply)
 	}
 
-	// Send response back
 	encoder := json.NewEncoder(conn)
 	encoder.Encode(response)
 }
@@ -1359,6 +1404,12 @@ func (r *Raft) applyConfigChange(change *ConfigChange) {
 			}
 		}
 		r.peers = append(r.peers, change.ServerAddr)
+		if change.ServerID != "" {
+			if r.peerAddrByID == nil {
+				r.peerAddrByID = make(map[string]string)
+			}
+			r.peerAddrByID[change.ServerID] = change.ServerAddr
+		}
 
 		// Initialize nextIndex and matchIndex for new peer
 		if r.state == Leader {
@@ -1381,6 +1432,16 @@ func (r *Raft) applyConfigChange(change *ConfigChange) {
 			}
 		}
 		r.peers = newPeers
+		if change.ServerID != "" {
+			delete(r.peerAddrByID, change.ServerID)
+		} else if r.peerAddrByID != nil {
+			for id, addr := range r.peerAddrByID {
+				if addr == change.ServerAddr {
+					delete(r.peerAddrByID, id)
+					break
+				}
+			}
+		}
 
 		// Clean up leader state
 		if r.state == Leader {

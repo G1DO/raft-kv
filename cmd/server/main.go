@@ -64,7 +64,7 @@ func runCluster(id, addr, raftAddr, metricsAddr, otlpEndpoint, peers, dataDir, t
 		os.Exit(1)
 	}
 
-	peerAddrs, hints, err := parsePeers(peers, id)
+	peerAddrs, peerIDs, hints, err := parsePeers(peers, id)
 	if err != nil {
 		logger.Error("invalid_peers", "error", err)
 		os.Exit(1)
@@ -99,6 +99,7 @@ func runCluster(id, addr, raftAddr, metricsAddr, otlpEndpoint, peers, dataDir, t
 		RaftAddr:    raftAddr,
 		MetricsAddr: metricsAddr,
 		Peers:       peerAddrs,
+		PeerIDs:     peerIDs,
 		DataDir:     dataDir,
 		LeaderHint:  hints,
 		Logger:      logger,
@@ -125,17 +126,18 @@ func runCluster(id, addr, raftAddr, metricsAddr, otlpEndpoint, peers, dataDir, t
 }
 
 // parsePeers turns "id@raftAddr@clientAddr,..." into the Raft peer-address list
-// (raft addresses) and an id->clientAddr hint map for client redirection. The
-// entry matching selfID (if present) is dropped: a node must never list itself
-// among its peers, because Raft sizes the cluster as len(peers)+1. Tolerating
-// self in the list lets every node be handed one identical --peers spanning the
-// whole cluster — which is what a Kubernetes StatefulSet (shared pod template)
-// needs, since it cannot give each pod a different, self-excluding list.
-func parsePeers(peers, selfID string) ([]string, map[string]string, error) {
-	hints := make(map[string]string)
-	var addrs []string
+// (raft addresses), id->raftAddr for mTLS identity checks, and an id->clientAddr
+// hint map for client redirection. The entry matching selfID (if present) is
+// dropped: a node must never list itself among its peers, because Raft sizes
+// the cluster as len(peers)+1. Tolerating self in the list lets every node be
+// handed one identical --peers spanning the whole cluster — which is what a
+// Kubernetes StatefulSet (shared pod template) needs, since it cannot give each
+// pod a different, self-excluding list.
+func parsePeers(peers, selfID string) (addrs []string, raftByID map[string]string, hints map[string]string, err error) {
+	hints = make(map[string]string)
+	raftByID = make(map[string]string)
 	if strings.TrimSpace(peers) == "" {
-		return addrs, hints, nil
+		return addrs, raftByID, hints, nil
 	}
 	for _, p := range strings.Split(peers, ",") {
 		p = strings.TrimSpace(p)
@@ -144,14 +146,15 @@ func parsePeers(peers, selfID string) ([]string, map[string]string, error) {
 		}
 		parts := strings.Split(p, "@")
 		if len(parts) != 3 {
-			return nil, nil, fmt.Errorf("peer %q must be id@raftAddr@clientAddr", p)
+			return nil, nil, nil, fmt.Errorf("peer %q must be id@raftAddr@clientAddr", p)
 		}
 		peerID, peerRaft, peerClient := parts[0], parts[1], parts[2]
 		if peerID == selfID {
 			continue // never list self; quorum is sized as len(peers)+1
 		}
 		addrs = append(addrs, peerRaft)
+		raftByID[peerID] = peerRaft
 		hints[peerID] = peerClient
 	}
-	return addrs, hints, nil
+	return addrs, raftByID, hints, nil
 }

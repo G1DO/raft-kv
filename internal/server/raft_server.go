@@ -35,6 +35,7 @@ type RaftConfig struct {
 	RaftAddr    string            // peer-RPC listen address
 	MetricsAddr string            // HTTP metrics/health listen address
 	Peers       []string          // OTHER nodes' raft addresses
+	PeerIDs     map[string]string // OTHER nodes' id -> raft address (mTLS SAN binding)
 	DataDir     string            // per-node directory for log/state/snapshot
 	LeaderHint  map[string]string // node id -> client address, for NOT_LEADER redirects
 	Logger      *slog.Logger
@@ -87,6 +88,7 @@ func NewRaftServer(cfg RaftConfig) (*RaftServer, error) {
 	if err := r.SetTLSConfig(cfg.TLS); err != nil {
 		return nil, fmt.Errorf("raft TLS config: %w", err)
 	}
+	r.SetPeerIdentities(cfg.PeerIDs)
 
 	s := &RaftServer{
 		cfg:     cfg,

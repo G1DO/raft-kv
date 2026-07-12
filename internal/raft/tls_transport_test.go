@@ -86,6 +86,72 @@ func TestMTLS_PlaintextClientRejected(t *testing.T) {
 	}
 }
 
+func TestMTLS_WrongPeerIdentityRejected(t *testing.T) {
+	dir := t.TempDir()
+	caDER, caKey := mustGenCA(t)
+	caPath := filepath.Join(dir, "ca.crt")
+	mustWritePEM(t, caPath, "CERTIFICATE", caDER)
+	aCert, aKey := mustGenLeaf(t, dir, "node-a", caDER, caKey)
+	bCert, bKey := mustGenLeaf(t, dir, "node-b", caDER, caKey)
+
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	nodeA := NewRaft("node-a", nil, nil, filepath.Join(dirA, "log"), filepath.Join(dirA, "state"), filepath.Join(dirA, "snap"), nil, nil)
+	nodeB := NewRaft("node-b", nil, nil, filepath.Join(dirB, "log"), filepath.Join(dirB, "state"), filepath.Join(dirB, "snap"), nil, nil)
+	defer nodeA.Stop()
+	defer nodeB.Stop()
+
+	if err := nodeA.SetTLSConfig(&TLSConfig{CertFile: aCert, KeyFile: aKey, CAFile: caPath}); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeB.SetTLSConfig(&TLSConfig{CertFile: bCert, KeyFile: bKey, CAFile: caPath}); err != nil {
+		t.Fatal(err)
+	}
+	nodeA.SetPeerIdentities(map[string]string{"node-b": "127.0.0.1:0"})
+	nodeB.SetPeerIdentities(map[string]string{"node-a": "127.0.0.1:0"})
+
+	if err := nodeA.StartRPCServer("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+
+	// CA-valid node-b cert claiming to be node-a must not mutate Raft state.
+	args := &RequestVoteArgs{Term: 1, CandidateID: "node-a", LastLogIndex: 0, LastLogTerm: 0}
+	var reply RequestVoteReply
+	ok := nodeB.callRPC(nodeA.rpcAddr, "RequestVote", args, &reply)
+	if ok {
+		t.Fatal("expected RPC to fail when cert identity mismatches claimed CandidateID")
+	}
+	nodeA.mu.Lock()
+	term := nodeA.currentTerm
+	voted := nodeA.votedFor
+	nodeA.mu.Unlock()
+	if term != 0 || voted != "" {
+		t.Fatalf("Raft state changed after spoofed RPC: term=%d votedFor=%q", term, voted)
+	}
+}
+
+func TestCertMatchesIdentity(t *testing.T) {
+	dir := t.TempDir()
+	caDER, caKey := mustGenCA(t)
+	certPath, _ := mustGenLeaf(t, dir, "raft-kv-0", caDER, caKey)
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(certPEM)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idToAddr := map[string]string{"raft-kv-0": "raft-kv-0.raft-kv:9090"}
+	if !certMatchesIdentity(cert, "raft-kv-0", idToAddr) {
+		t.Fatal("expected match on DNS SAN == member id")
+	}
+	if certMatchesIdentity(cert, "raft-kv-1", idToAddr) {
+		t.Fatal("expected mismatch for wrong member id")
+	}
+}
+
 func mustWritePEM(t *testing.T, path, typ string, der []byte) {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
