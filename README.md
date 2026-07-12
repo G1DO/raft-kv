@@ -658,6 +658,7 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
   - [ADR-010](docs/decisions/ADR-010-mtls-rollout.md) — peer mTLS fail-closed rollout (no plaintext fallback)
   - [ADR-011](docs/decisions/ADR-011-networkpolicy-boundary.md) — NetworkPolicy client/peer/metrics boundary
   - [ADR-012](docs/decisions/ADR-012-security-audit-events.md) — app security audit events (not K8s API audit)
+  - [ADR-013](docs/decisions/ADR-013-chaos-lab-environment.md) — chaos lab (kind + Calico + Chaos Mesh 2.8.3)
 - [docs/runbooks/restore.md](docs/runbooks/restore.md) — backup / wipe / disaster restore + MTTR
 - [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; what M8's mTLS work will fix.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured election MTTR, throughput, and quorum-loss behaviour, with the exact method.

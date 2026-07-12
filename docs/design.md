@@ -300,6 +300,7 @@ These are real and deliberate. Listed here so reviewers don't have to find them 
 | Peer mTLS rollout | Fail closed when mounts missing; plaintext only if TLS unset | Silent TLS→plaintext fallback | [ADR-010](decisions/ADR-010-mtls-rollout.md) |
 | NetworkPolicy boundary | Labeled clients + peer/Prometheus selectors; default-deny | Allow client port from anywhere | [ADR-011](decisions/ADR-011-networkpolicy-boundary.md) |
 | Security audit events | App `audit=true` JSON → Loki; actor unauthenticated | Claim Promtail = K8s API audit / log values | [ADR-012](decisions/ADR-012-security-audit-events.md) |
+| Chaos lab environment | kind + Calico + Chaos Mesh 2.8.3 in `chaos-mesh` ns | kindnet-only / chaos in `raft-kv` ns | [ADR-013](decisions/ADR-013-chaos-lab-environment.md) |
 
 ## What I learned (cross-reference)
 
