@@ -21,5 +21,14 @@ Peer mTLS is on by default (ADR-009/010). Each ordinal needs a Secret before pod
   {{ include "raft-kv.fullname" . }}-0-tls … {{ include "raft-kv.fullname" . }}-{{ sub (int .Values.replicaCount) 1 }}-tls
   keys: tls.crt, tls.key, ca.crt
 
-Phase B (Vault/ESO) or a lab self-signed script creates them. Missing material fails closed.
+{{- if .Values.tls.eso.enabled }}
+ESO is enabled (tls.eso.enabled): VaultDynamicSecret + ExternalSecret objects are rendered
+for each ordinal. Ensure External Secrets Operator and Vault PKI are up; Secrets stay out of Git.
+{{- else }}
+Provision Secrets with Vault/ESO (set tls.eso.enabled=true + vault refs) or the lab script:
+
+  ./scripts/gen-ordinal-tls-secrets.sh --namespace {{ .Release.Namespace }} --name {{ include "raft-kv.fullname" . }} --replicas {{ .Values.replicaCount }}
+{{- end }}
+
+Missing material fails closed (init CrashLoop).
 {{- end }}

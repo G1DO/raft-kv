@@ -51,3 +51,26 @@ jobs:
               | kubeconform -strict -summary -kubernetes-version "$KUBERNETES_VERSION"
             echo "::endgroup::"
           done
+      - name: Render ESO path (ignore missing CRD schemas)
+        run: |
+          # ExternalSecret / VaultDynamicSecret need ESO CRDs; validate YAML shape only.
+          helm template rk "$CHART" \
+            --set replicaCount=3 \
+            --set tls.eso.enabled=true \
+            --set tls.eso.pki.path=pki/issue/raft-kv \
+            --set tls.eso.vault.server=https://vault.example.svc:8200 \
+            --set tls.eso.vault.auth.role=raft-kv-eso \
+            --set tls.eso.vault.auth.serviceAccountName=external-secrets \
+            | kubeconform -strict -summary -ignore-missing-schemas \
+                -kubernetes-version "$KUBERNETES_VERSION"
+          # Sanity: no PEM blobs in the rendered ESO manifests.
+          if helm template rk "$CHART" \
+            --set tls.eso.enabled=true \
+            --set tls.eso.pki.path=pki/issue/raft-kv \
+            --set tls.eso.vault.server=https://vault.example.svc:8200 \
+            --set tls.eso.vault.auth.role=raft-kv-eso \
+            --set tls.eso.vault.auth.serviceAccountName=external-secrets \
+            | grep -E 'BEGIN (CERTIFICATE|PRIVATE KEY)'; then
+            echo "rendered chart leaked PEM material" >&2
+            exit 1
+          fi
