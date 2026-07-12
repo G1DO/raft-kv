@@ -42,8 +42,10 @@ deliberate choice, not a missing feature.
 - **Multi-key transactions.** State machine is a flat key→value map; each
   command is independent.
 - **SQL or secondary indexes.** Get/Put/Delete only.
-- **Encryption or authentication of any kind.** Peer RPC is plaintext JSON
-  over TCP and unauthenticated. See [threat model](threat-model.md).
+- **Client encryption or authentication.** The KV line protocol is still
+  plaintext and unauthenticated. Peer RPC uses mTLS when configured
+  ([ADR-009](decisions/ADR-009-mtls-peer-identity.md),
+  [ADR-010](decisions/ADR-010-mtls-rollout.md)); see [threat model](threat-model.md).
 - **Joint-consensus membership changes.** Single-server-at-a-time only
   (ADR-001).
 - **High-throughput optimisations.** No batching, no pipelining of
@@ -274,9 +276,10 @@ These are real and deliberate. Listed here so reviewers don't have to find them 
   A client that retries a `PUT` after a leader change can apply the write
   twice. Promoting the protocol to carry both IDs is parked for later and
   will be done if measurement work needs deterministic per-client throughput.
-- **Peer RPC is unauthenticated and plaintext** — any host that can reach
-  the raft port can pose as a peer. See [threat model](threat-model.md);
-  fix planned in M8.
+- **Peer RPC without TLS config is still plaintext** — local demos and
+  tests may leave mTLS unset. With TLS configured, SAN↔member binding
+  mitigates peer spoofing; residuals (CA compromise, restart-required
+  rotation) are in [threat model](threat-model.md).
 - **Two server paths exist** — the legacy single-node `Server` is still
   wired into the no-flag default and three existing tests. Consolidating
   is parked for later.

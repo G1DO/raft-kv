@@ -98,7 +98,8 @@ operator to fix delivery. Rejected.
   dual-trust until tested.
 - ADR-009’s “tests may use plaintext if D2 records it” is satisfied: plaintext
   = TLS config unset only.
-- Threat-model T1 / T3 / T6 / T8 remain **Open** until Phase A verification;
-  this ADR is behavioural design, not proof.
+- Threat-model T1 / T3 / T8 are **Mitigated** (T6 peer half **Partial**)
+  after Phase A verification; this ADR remains the rollout contract
+  (fail-closed, no dual-trust CA claim without a drill).
 - Operators see loud startup failure on missing mounts instead of a quiet,
   insecure cluster.

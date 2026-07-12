@@ -153,8 +153,10 @@ only.
 - Phase B (#7–#10) adds Vault PKI + ESO templates that produce
   `<fullname>-N-tls` Secrets with the three keys above; rotation drill states
   restart-required until proven otherwise.
-- Threat-model T1 / T3 / T6 / T8 stay **Open** until Phase A verification
-  succeeds; this ADR is the design, not the proof.
+- Threat-model T1 / T3 / T8 are **Mitigated** (T6 peer half **Partial**)
+  after Phase A verification; residuals (CA compromise, restart-required
+  leaf reload, plaintext when TLS unset) remain in
+  [threat-model.md](../threat-model.md).
 - Connection-per-RPC ([ADR-003](ADR-003-json-tcp-vs-grpc.md)) becomes more
   expensive under TLS; acceptable for M8 demo scale; connection pooling is
   not part of this decision.
