@@ -86,9 +86,9 @@ func TestRaft_SetTLSConfig(t *testing.T) {
 	cert := filepath.Join(dir, "tls.crt")
 	key := filepath.Join(dir, "tls.key")
 	ca := filepath.Join(dir, "ca.crt")
-	mustWrite(t, cert, "cert")
-	mustWrite(t, key, "key")
-	mustWrite(t, ca, "ca")
+	caDER, caKey := mustGenCA(t)
+	mustWritePEM(t, ca, "CERTIFICATE", caDER)
+	cert, key = mustGenLeaf(t, dir, "n1", caDER, caKey)
 	if err := r.SetTLSConfig(&TLSConfig{CertFile: cert, KeyFile: key, CAFile: ca}); err != nil {
 		t.Fatal(err)
 	}

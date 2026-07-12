@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -93,33 +94,50 @@ type Raft struct {
 	logger *slog.Logger
 	metric *raftMetrics
 
-	// Peer mTLS paths (ADR-009/010). Nil or empty => plaintext. Handshake is Phase A #2.
+	// Peer mTLS (ADR-009/010). Nil paths / nil mtls => plaintext peer RPC.
 	tlsConfig *TLSConfig
+	mtls      *mtlsState // loaded when tlsConfig is enabled; used by listen/dial only
 }
 
-// SetTLSConfig stores validated peer-TLS paths. Empty/nil leaves plaintext RPC.
-// Call before StartRPCServer. Fail-closed: partial paths or missing files return an error.
+// SetTLSConfig stores validated peer-TLS paths and loads PEM material.
+// Empty/nil leaves plaintext RPC. Call before StartRPCServer.
+// Fail-closed: partial paths, missing files, or unreadable PEMs return an error.
 func (r *Raft) SetTLSConfig(cfg *TLSConfig) error {
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	var loaded *mtlsState
+	if cfg != nil && cfg.Enabled() {
+		var err error
+		loaded, err = loadMTLS(cfg)
+		if err != nil {
+			return err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if cfg == nil || !cfg.Enabled() {
 		r.tlsConfig = nil
+		r.mtls = nil
 		return nil
 	}
-	// Copy so callers cannot mutate paths under us after validate.
 	cp := *cfg
 	r.tlsConfig = &cp
+	r.mtls = loaded
 	return nil
 }
 
-// TLSEnabled reports whether peer mTLS paths are configured (for tests/ops).
+// TLSEnabled reports whether peer mTLS is configured (for tests/ops).
 func (r *Raft) TLSEnabled() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.tlsConfig != nil && r.tlsConfig.Enabled()
+	return r.mtls != nil
+}
+
+func (r *Raft) peerMTLS() *mtlsState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mtls
 }
 
 // NewRaft creates a new Raft node
@@ -1025,9 +1043,18 @@ type RPCResponse struct {
 	Data json.RawMessage
 }
 
-// StartRPCServer starts listening for incoming RPCs from other nodes
+// StartRPCServer starts listening for incoming RPCs from other nodes.
+// With peer mTLS configured, the listener requires and verifies client certificates.
 func (r *Raft) StartRPCServer(addr string) error {
-	listener, err := net.Listen("tcp", addr)
+	var (
+		listener net.Listener
+		err      error
+	)
+	if m := r.peerMTLS(); m != nil {
+		listener, err = tls.Listen("tcp", addr, m.serverTLSConfig())
+	} else {
+		listener, err = net.Listen("tcp", addr)
+	}
 	if err != nil {
 		return err
 	}
@@ -1035,7 +1062,6 @@ func (r *Raft) StartRPCServer(addr string) error {
 	r.listener = listener
 	r.rpcAddr = listener.Addr().String()
 
-	// Handle incoming connections in background
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -1092,18 +1118,34 @@ func (r *Raft) handleRPC(conn net.Conn) {
 }
 
 // callRPC sends an RPC to a peer and waits for response
-// Returns false if the call failed (network error, timeout, etc.)
+// Returns false if the call failed (network error, timeout, TLS handshake, etc.).
+// Never falls back from TLS to plaintext (ADR-010).
 func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply interface{}) bool {
-	// Connect to peer
-	conn, err := net.DialTimeout("tcp", peer, 500*time.Millisecond)
+	raw, err := net.DialTimeout("tcp", peer, 500*time.Millisecond)
 	if err != nil {
 		r.logger.Warn("rpc_failed", "node", r.id, "peer", peer, "rpc", rpcType, "stage", "dial", "error", err)
-		return false // peer unreachable
+		return false
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	_ = raw.SetDeadline(deadline)
+
+	var conn net.Conn = raw
+	if m := r.peerMTLS(); m != nil {
+		host, _, splitErr := net.SplitHostPort(peer)
+		if splitErr != nil {
+			host = peer
+		}
+		tconn := tls.Client(raw, m.clientTLSConfig(host))
+		if err := tconn.Handshake(); err != nil {
+			_ = raw.Close()
+			r.logger.Warn("rpc_failed", "node", r.id, "peer", peer, "rpc", rpcType, "stage", "tls_handshake", "error", err)
+			return false
+		}
+		_ = tconn.SetDeadline(deadline)
+		conn = tconn
 	}
 	defer conn.Close()
-
-	// Set deadline for the whole RPC
-	conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 
 	// Encode args to JSON
 	argsData, err := json.Marshal(args)

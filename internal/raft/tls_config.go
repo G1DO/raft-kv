@@ -1,14 +1,14 @@
 package raft
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"os"
 )
 
 // TLSConfig holds filesystem paths for peer mTLS material (ADR-009 / ADR-010).
 // Nil or all-empty paths means plaintext peer RPC (tests / explicit unset only).
-// Dial and listen still use these paths in Phase A #2; this type is the contract
-// at the server/Raft boundary so election logic never sees raw tls.Config.
 type TLSConfig struct {
 	CertFile string // leaf certificate PEM (tls.crt)
 	KeyFile  string // leaf private key PEM (tls.key)
@@ -45,4 +45,45 @@ func (c *TLSConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// mtlsState is loaded PEM material for peer dial/listen. Election logic never
+// sees this — only StartRPCServer / callRPC.
+type mtlsState struct {
+	cert tls.Certificate
+	pool *x509.CertPool
+}
+
+func loadMTLS(cfg *TLSConfig) (*mtlsState, error) {
+	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("raft TLS: load cert/key: %w", err)
+	}
+	caPEM, err := os.ReadFile(cfg.CAFile)
+	if err != nil {
+		return nil, fmt.Errorf("raft TLS: read CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("raft TLS: no certificates parsed from CA file %q", cfg.CAFile)
+	}
+	return &mtlsState{cert: cert, pool: pool}, nil
+}
+
+func (m *mtlsState) serverTLSConfig() *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{m.cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    m.pool,
+		MinVersion:   tls.VersionTLS12,
+	}
+}
+
+func (m *mtlsState) clientTLSConfig(serverName string) *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{m.cert},
+		RootCAs:      m.pool,
+		ServerName:   serverName,
+		MinVersion:   tls.VersionTLS12,
+	}
 }
