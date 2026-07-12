@@ -1,0 +1,16 @@
+{{- /*
+Phase B #8 — Dedicated identity for Vault K8s auth (not the raft-kv workload).
+
+ESO VaultDynamicSecret.serviceAccountRef must point at an SA in this namespace.
+The raft-kv StatefulSet does not use this account.
+*/ -}}
+{{- if and .Values.tls.enabled .Values.tls.eso.enabled .Values.tls.eso.createServiceAccount }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.tls.eso.vault.auth.serviceAccountName }}
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tls-eso-identity
+automountServiceAccountToken: false
+{{- end }}

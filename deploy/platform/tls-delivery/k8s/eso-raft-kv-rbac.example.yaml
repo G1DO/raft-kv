@@ -1,0 +1,43 @@
+# Example RBAC: let the ESO controller manage TLS Secrets in raft-kv only.
+#
+# Apply once after External Secrets Operator is installed. Adjust the
+# RoleBinding subject if your ESO release uses a different namespace/SA name.
+#
+#   kubectl apply -f deploy/platform/tls-delivery/k8s/eso-raft-kv-rbac.example.yaml
+#
+# This does NOT grant Vault access — Vault auth is via SA raft-kv-eso + Vault role.
+# raft-kv workload pods must not be listed here.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: raft-kv-eso-secret-sync
+  namespace: raft-kv
+rules:
+  # ExternalSecret target Secrets (create/update on sync).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # VaultDynamicSecret K8s auth: ESO requests a token for raft-kv-eso.
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: ["raft-kv-eso"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: ["raft-kv-eso"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: raft-kv-eso-secret-sync
+  namespace: raft-kv
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: raft-kv-eso-secret-sync
+subjects:
+  - kind: ServiceAccount
+    name: external-secrets
+    namespace: external-secrets

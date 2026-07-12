@@ -1,0 +1,40 @@
+{{- /*
+Phase B #8 — Namespace RBAC so the ESO controller can sync TLS Secrets here
+and request tokens for the Vault K8s-auth identity SA. Does not grant the
+raft-kv workload SA any Secret API access.
+*/ -}}
+{{- if and .Values.tls.enabled .Values.tls.eso.enabled .Values.tls.eso.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "raft-kv.fullname" . }}-eso-secret-sync
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: [{{ .Values.tls.eso.vault.auth.serviceAccountName | quote }}]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    resourceNames: [{{ .Values.tls.eso.vault.auth.serviceAccountName | quote }}]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "raft-kv.fullname" . }}-eso-secret-sync
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "raft-kv.fullname" . }}-eso-secret-sync
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.tls.eso.controller.serviceAccountName }}
+    namespace: {{ .Values.tls.eso.controller.namespace }}
+{{- end }}

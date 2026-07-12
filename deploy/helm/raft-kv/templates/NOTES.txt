@@ -24,6 +24,7 @@ Peer mTLS is on by default (ADR-009/010). Each ordinal needs a Secret before pod
 {{- if .Values.tls.eso.enabled }}
 ESO is enabled (tls.eso.enabled): VaultDynamicSecret + ExternalSecret objects are rendered
 for each ordinal. Ensure External Secrets Operator and Vault PKI are up; Secrets stay out of Git.
+Bootstrap: deploy/platform/tls-delivery/README.md — renewal/revoke: docs/runbooks/tls-certificates.md
 {{- else }}
 Provision Secrets with Vault/ESO (set tls.eso.enabled=true + vault refs) or the lab script:
 

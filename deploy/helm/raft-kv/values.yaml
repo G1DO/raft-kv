@@ -161,6 +161,15 @@ tls:
   # (never PEMs or tokens in values committed to Git).
   eso:
     enabled: false
+    # Create SA raft-kv-eso for Vault K8s auth (not used by raft-kv containers).
+    createServiceAccount: true
+    # Namespace Role + RoleBinding so ESO can write Secrets and mint SA tokens here.
+    rbac:
+      create: true
+    # ESO controller identity (adjust to your ESO Helm release).
+    controller:
+      namespace: external-secrets
+      serviceAccountName: external-secrets
     # How often ESO re-issues from Vault. Keep below leaf TTL (pki.ttl).
     refreshInterval: 24h
     pki:
@@ -174,12 +183,10 @@ tls:
       auth:
         # Kubernetes auth mount in Vault (usually "kubernetes").
         mountPath: kubernetes
-        # Vault role bound to the SA below; policy scoping is Phase B #8.
-        role: ""
-        # ServiceAccount in this release namespace that ESO uses for Vault login.
-        # Must exist before ExternalSecrets sync (often the ESO controller SA
-        # mirrored into the app namespace, or a dedicated SA — #8 documents which).
-        serviceAccountName: ""
+        # Vault role bound to the SA below; policy scoped in deploy/platform/tls-delivery/.
+        role: raft-kv-eso
+        # ServiceAccount in this release namespace for Vault K8s auth (ESO uses its token).
+        serviceAccountName: raft-kv-eso
 
 # Override the generated resource names. Empty => the chart's fullname helper
 # (release name, collapsing to "raft-kv" for a release also named raft-kv).
