@@ -33,6 +33,42 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
+      {{- if .Values.tls.enabled }}
+      # Init mounts every ordinal's TLS Secret but only copies this pod's material
+      # into an emptyDir; the main container never sees sibling private keys.
+      initContainers:
+        - name: select-tls
+          image: {{ .Values.tls.initImage | quote }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              SRC="/tls-in/${POD_NAME}"
+              if [ ! -f "$SRC/{{ .Values.tls.certFile }}" ] || [ ! -f "$SRC/{{ .Values.tls.keyFile }}" ] || [ ! -f "$SRC/{{ .Values.tls.caFile }}" ]; then
+                echo "raft-kv: missing TLS files for ${POD_NAME} (expected Secret {{ include "raft-kv.fullname" . }}-<ordinal>-tls)" >&2
+                exit 1
+              fi
+              cp "$SRC/{{ .Values.tls.certFile }}" /tls-out/{{ .Values.tls.certFile }}
+              cp "$SRC/{{ .Values.tls.keyFile }}" /tls-out/{{ .Values.tls.keyFile }}
+              cp "$SRC/{{ .Values.tls.caFile }}" /tls-out/{{ .Values.tls.caFile }}
+              chmod 400 /tls-out/{{ .Values.tls.certFile }} /tls-out/{{ .Values.tls.keyFile }} /tls-out/{{ .Values.tls.caFile }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: tls
+              mountPath: /tls-out
+            {{- $fullname := include "raft-kv.fullname" . }}
+            {{- range $i := until (int .Values.replicaCount) }}
+            - name: tls-{{ $i }}
+              mountPath: /tls-in/{{ $fullname }}-{{ $i }}
+              readOnly: true
+            {{- end }}
+      {{- end }}
       containers:
         - name: raft-kv
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -58,6 +94,11 @@ spec:
             {{- end }}
             - --data=/data
             - --peers={{ include "raft-kv.peers" . }}
+            {{- if .Values.tls.enabled }}
+            - --raft-tls-cert={{ .Values.tls.mountPath }}/{{ .Values.tls.certFile }}
+            - --raft-tls-key={{ .Values.tls.mountPath }}/{{ .Values.tls.keyFile }}
+            - --raft-tls-ca={{ .Values.tls.mountPath }}/{{ .Values.tls.caFile }}
+            {{- end }}
           ports:
             - name: client
               containerPort: {{ .Values.ports.client }}
@@ -94,6 +135,24 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: {{ .Values.tls.mountPath }}
+              readOnly: true
+            {{- end }}
+      {{- if .Values.tls.enabled }}
+      volumes:
+        - name: tls
+          emptyDir: {}
+        {{- $fullname := include "raft-kv.fullname" . }}
+        {{- range $i := until (int .Values.replicaCount) }}
+        - name: tls-{{ $i }}
+          secret:
+            secretName: {{ $fullname }}-{{ $i }}-tls
+            # 0440 + pod fsGroup so non-root init/main can read (0400 is root-only).
+            defaultMode: 0440
+        {{- end }}
+      {{- end }}
   # One PVC per pod, kept across reschedules — this is the "rejoins from its PVC"
   # half of the milestone.
   volumeClaimTemplates:

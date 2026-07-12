@@ -141,6 +141,21 @@ metrics:
 tracing:
   otlpEndpoint: ""
 
+# Peer mTLS paths and Secret mounts (ADR-009 / ADR-010). Default on: the chart
+# always passes --raft-tls-{cert,key,ca} and expects one Secret per ordinal
+# named {{ fullname }}-<N>-tls with keys tls.crt, tls.key, ca.crt (Phase B ESO
+# or a lab script creates them). Missing Secrets => init fails => fail closed.
+# enabled: false omits TLS flags (plaintext) — break-glass / tests only.
+tls:
+  enabled: true
+  mountPath: /var/run/raft-kv/tls
+  certFile: tls.crt
+  keyFile: tls.key
+  caFile: ca.crt
+  # Copies this pod's Secret into an emptyDir so the main container does not
+  # mount sibling ordinal Secrets (per-ordinal isolation).
+  initImage: busybox:1.36
+
 # Override the generated resource names. Empty => the chart's fullname helper
 # (release name, collapsing to "raft-kv" for a release also named raft-kv).
 nameOverride: ""

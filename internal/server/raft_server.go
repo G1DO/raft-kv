@@ -39,6 +39,9 @@ type RaftConfig struct {
 	LeaderHint  map[string]string // node id -> client address, for NOT_LEADER redirects
 	Logger      *slog.Logger
 	Metrics     *metrics.Registry
+	// TLS holds peer-RPC certificate paths (ADR-009). Nil/empty => plaintext
+	// (tests). When set, all of CertFile/KeyFile/CAFile must exist (ADR-010).
+	TLS *raft.TLSConfig
 	// Tracer emits request/consensus-stage spans. nil => no-op tracing; spans
 	// stay out of internal/raft either way (ADR-007: the consensus core is
 	// zero-dep, instrumentation lives at this layer).
@@ -81,6 +84,9 @@ func NewRaftServer(cfg RaftConfig) (*RaftServer, error) {
 		cfg.Tracer = noop.NewTracerProvider().Tracer("raft-kv")
 	}
 	r := raft.NewRaft(cfg.ID, cfg.Peers, applyCh, logPath, statePath, snapshotPath, cfg.Logger, cfg.Metrics)
+	if err := r.SetTLSConfig(cfg.TLS); err != nil {
+		return nil, fmt.Errorf("raft TLS config: %w", err)
+	}
 
 	s := &RaftServer{
 		cfg:     cfg,

@@ -13,3 +13,13 @@ Talk to it (client KV text protocol):
 
 Every pod is wired with the whole-cluster peer list:
   {{ include "raft-kv.peers" . }}
+
+{{- if .Values.tls.enabled }}
+
+Peer mTLS is on by default (ADR-009/010). Each ordinal needs a Secret before pods become Ready:
+
+  {{ include "raft-kv.fullname" . }}-0-tls … {{ include "raft-kv.fullname" . }}-{{ sub (int .Values.replicaCount) 1 }}-tls
+  keys: tls.crt, tls.key, ca.crt
+
+Phase B (Vault/ESO) or a lab self-signed script creates them. Missing material fails closed.
+{{- end }}

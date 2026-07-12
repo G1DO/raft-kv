@@ -35,9 +35,13 @@ echo "==> loading image into kind"
 kind load docker-image "$IMAGE" --name "$CLUSTER"
 
 echo "==> installing the Helm chart ($RELEASE)"
+# Chart defaults tls.enabled=true (ADR-009/010), but per-ordinal Secrets are not
+# provisioned until Phase B / a lab cert script — without them init fails closed.
+# Disable TLS here so the existing kind demo path keeps working; flip off this
+# --set once Secrets {{name}}-N-tls exist.
 # --wait blocks until the StatefulSet's pods are Ready (replaces a separate
 # rollout-status step); --install makes the first run and re-runs idempotent.
-helm upgrade --install "$RELEASE" "$CHART" --wait --timeout 120s
+helm upgrade --install "$RELEASE" "$CHART" --wait --timeout 120s --set tls.enabled=false
 
 echo
 kubectl get pods -l app=raft-kv -o wide

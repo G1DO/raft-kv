@@ -12,6 +12,7 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/G1DO/raft-kv/internal/raft"
 	"github.com/G1DO/raft-kv/internal/server"
 )
 
@@ -23,6 +24,9 @@ func main() {
 	otlpEndpoint := flag.String("otlp-endpoint", "", "OTLP/HTTP trace endpoint as host:port (cluster mode); empty disables tracing")
 	peers := flag.String("peers", "", "other nodes as id@raftAddr@clientAddr, comma-separated")
 	data := flag.String("data", "data", "data directory")
+	raftTLSCert := flag.String("raft-tls-cert", "", "peer mTLS leaf cert PEM path (cluster mode); requires key+CA")
+	raftTLSKey := flag.String("raft-tls-key", "", "peer mTLS leaf key PEM path (cluster mode); requires cert+CA")
+	raftTLSCA := flag.String("raft-tls-ca", "", "peer mTLS CA bundle PEM path (cluster mode); requires cert+key")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -30,7 +34,8 @@ func main() {
 		runSingleNode(*addr, *data, logger)
 		return
 	}
-	runCluster(*id, *addr, *raftAddr, *metricsAddr, *otlpEndpoint, *peers, *data, logger)
+	runCluster(*id, *addr, *raftAddr, *metricsAddr, *otlpEndpoint, *peers, *data,
+		*raftTLSCert, *raftTLSKey, *raftTLSCA, logger)
 }
 
 // runSingleNode is the original flag-less behaviour: a plain single-node KV
@@ -53,7 +58,7 @@ func runSingleNode(addr, dataDir string, logger *slog.Logger) {
 
 // runCluster wires this node into a Raft cluster and serves clients until a
 // SIGINT/SIGTERM triggers a graceful step-down.
-func runCluster(id, addr, raftAddr, metricsAddr, otlpEndpoint, peers, dataDir string, logger *slog.Logger) {
+func runCluster(id, addr, raftAddr, metricsAddr, otlpEndpoint, peers, dataDir, tlsCert, tlsKey, tlsCA string, logger *slog.Logger) {
 	if raftAddr == "" {
 		logger.Error("missing_required_flag", "flag", "raft-addr")
 		os.Exit(1)
@@ -69,6 +74,11 @@ func runCluster(id, addr, raftAddr, metricsAddr, otlpEndpoint, peers, dataDir st
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		logger.Error("data_dir_create_failed", "dir", dataDir, "error", err)
 		os.Exit(1)
+	}
+
+	var tlsCfg *raft.TLSConfig
+	if tlsCert != "" || tlsKey != "" || tlsCA != "" {
+		tlsCfg = &raft.TLSConfig{CertFile: tlsCert, KeyFile: tlsKey, CAFile: tlsCA}
 	}
 
 	var tracer trace.Tracer
@@ -92,6 +102,7 @@ func runCluster(id, addr, raftAddr, metricsAddr, otlpEndpoint, peers, dataDir st
 		DataDir:     dataDir,
 		LeaderHint:  hints,
 		Logger:      logger,
+		TLS:         tlsCfg,
 		Tracer:      tracer,
 	})
 	if err != nil {

@@ -92,6 +92,34 @@ type Raft struct {
 
 	logger *slog.Logger
 	metric *raftMetrics
+
+	// Peer mTLS paths (ADR-009/010). Nil or empty => plaintext. Handshake is Phase A #2.
+	tlsConfig *TLSConfig
+}
+
+// SetTLSConfig stores validated peer-TLS paths. Empty/nil leaves plaintext RPC.
+// Call before StartRPCServer. Fail-closed: partial paths or missing files return an error.
+func (r *Raft) SetTLSConfig(cfg *TLSConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cfg == nil || !cfg.Enabled() {
+		r.tlsConfig = nil
+		return nil
+	}
+	// Copy so callers cannot mutate paths under us after validate.
+	cp := *cfg
+	r.tlsConfig = &cp
+	return nil
+}
+
+// TLSEnabled reports whether peer mTLS paths are configured (for tests/ops).
+func (r *Raft) TLSEnabled() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.tlsConfig != nil && r.tlsConfig.Enabled()
 }
 
 // NewRaft creates a new Raft node
