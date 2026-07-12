@@ -16,11 +16,13 @@ on:
   pull_request:
     paths:
       - "deploy/helm/**"
+      - "scripts/verify-tls-secret-hygiene.sh"
       - ".github/workflows/helm.yml"
   push:
     branches: [main]
     paths:
       - "deploy/helm/**"
+      - "scripts/verify-tls-secret-hygiene.sh"
       - ".github/workflows/helm.yml"
 
 env:
@@ -63,14 +65,5 @@ jobs:
             --set tls.eso.vault.auth.serviceAccountName=external-secrets \
             | kubeconform -strict -summary -ignore-missing-schemas \
                 -kubernetes-version "$KUBERNETES_VERSION"
-          # Sanity: no PEM blobs in the rendered ESO manifests.
-          if helm template rk "$CHART" \
-            --set tls.eso.enabled=true \
-            --set tls.eso.pki.path=pki/issue/raft-kv \
-            --set tls.eso.vault.server=https://vault.example.svc:8200 \
-            --set tls.eso.vault.auth.role=raft-kv-eso \
-            --set tls.eso.vault.auth.serviceAccountName=external-secrets \
-            | grep -E 'BEGIN (CERTIFICATE|PRIVATE KEY)'; then
-            echo "rendered chart leaked PEM material" >&2
-            exit 1
-          fi
+      - name: TLS secret hygiene (Phase B #10)
+        run: ./scripts/verify-tls-secret-hygiene.sh

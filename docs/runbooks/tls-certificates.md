@@ -139,3 +139,33 @@ Treat as disaster:
 
 ESO holds the Vault session; the workload only sees files under
 `/var/run/raft-kv/tls/`.
+
+---
+
+## Secret hygiene (Phase B #10)
+
+Static verification (CI + local):
+
+```bash
+./scripts/verify-tls-secret-hygiene.sh
+```
+
+Checks:
+
+| Check | Expectation |
+|-------|-------------|
+| Helm render | No `BEGIN CERTIFICATE` / `BEGIN PRIVATE KEY` in output |
+| Pod mounts | `readOnly: true` on workload TLS volume; init ordinal Secret mounts read-only |
+| Env / args | No `secretKeyRef`; `--raft-tls-*` are **paths** only |
+| Git | No committed PEM fixtures |
+| RBAC (rendered) | TLS Secret sync RoleBinding → ESO controller only, not `default` SA |
+
+With a live cluster:
+
+```bash
+./scripts/verify-tls-secret-hygiene.sh --live --namespace default
+```
+
+Confirms `system:serviceaccount:<ns>:default` **cannot** `get` `*-tls` Secrets.
+Raft pods use the namespace default SA for API access but receive TLS material
+via kubelet volume mounts only — not via `kubectl get secret`.

@@ -72,3 +72,10 @@ vault write pki/issue/other-role common_name=evil.example
 ```
 
 Kubernetes: unrelated SA must not read TLS Secrets (checked in Phase B #10).
+
+Run static checks anytime:
+
+```bash
+./scripts/verify-tls-secret-hygiene.sh
+# with cluster: ./scripts/verify-tls-secret-hygiene.sh --live --namespace raft-kv
+```
