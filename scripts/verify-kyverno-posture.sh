@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify-kyverno-posture.sh — Phase D #16 Kyverno posture checks (static + live).
+# verify-kyverno-posture.sh — Phase D #16–#17 Kyverno posture checks (static + live).
 #
 # Usage:
 #   ./scripts/verify-kyverno-posture.sh
@@ -47,8 +47,8 @@ if [[ -n "$LIVE" ]]; then
   kubectl get clusterpolicy raft-kv-posture >/dev/null 2>&1 || fail "apply policies first: ./scripts/apply-kyverno-policies.sh"
 
   MODE=$(kubectl get clusterpolicy raft-kv-posture -o jsonpath='{.spec.rules[0].validate.failureAction}')
-  [[ "$MODE" == "Audit" ]] || fail "expected Audit mode in #16 (got $MODE)"
-  ok "policy mode is Audit"
+  [[ "$MODE" == "Enforce" ]] || fail "expected Enforce mode in #17 (got $MODE)"
+  ok "policy mode is Enforce"
 
   echo "==> live: wait for background scan"
   sleep 8
@@ -69,9 +69,16 @@ if [[ -n "$LIVE" ]]; then
   [[ "$FAILS" -eq 0 ]] || fail "raft-kv pods failed posture policy reports"
   ok "raft-kv pods have no failing PolicyReport entries"
 
-  echo "==> live: deliberate bad pod is flagged (Audit allows create)"
+  echo "==> live: compliant pod recreate succeeds under Enforce"
+  kubectl delete pod -n "$RAFT_NS" raft-kv-0 --wait=true
+  kubectl wait --for=condition=Ready "pod/raft-kv-0" -n "$RAFT_NS" --timeout=120s >/dev/null
+  ok "raft-kv-0 recreated successfully"
+
+  echo "==> live: deliberate bad pod denied at admission"
   BAD=np-posture-bad-$$
-  kubectl apply -f - <<EOF >/dev/null
+  BAD_MANIFEST=$(mktemp)
+  trap 'rm -f "$BAD_MANIFEST"' EXIT
+  cat > "$BAD_MANIFEST" <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -87,14 +94,19 @@ spec:
       securityContext:
         runAsUser: 0
 EOF
-  sleep 5
-  if kubectl get events -n "$RAFT_NS" --field-selector "involvedObject.name=$BAD" 2>/dev/null \
-    | grep -q PolicyViolation; then
-    ok "bad pod flagged via PolicyViolation event (Audit)"
+  set +e
+  OUT=$(kubectl apply --dry-run=server -f "$BAD_MANIFEST" 2>&1)
+  RC=$?
+  set -e
+  rm -f "$BAD_MANIFEST"
+  trap - EXIT
+  [[ "$RC" -ne 0 ]] || fail "bad pod was admitted (expected Enforce denial)"
+  if echo "$OUT" | grep -Eiq 'denied|violation|failure'; then
+    ok "bad pod denied by Kyverno admission webhook"
   else
-    fail "expected PolicyViolation event for bad pod $BAD"
+    echo "$OUT" >&2
+    fail "expected admission denial message for bad pod"
   fi
-  kubectl delete pod "$BAD" -n "$RAFT_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 fi
 
 echo "==> all kyverno posture checks passed"

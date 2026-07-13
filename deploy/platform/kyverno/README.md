@@ -60,7 +60,7 @@ kubectl get clusterpolicy raft-kv-posture
 ./scripts/verify-kyverno-posture.sh --live
 ```
 
-Policies ship in **Audit** mode (#17 → Enforce).
+Policies ship in **Enforce** mode (#17).
 
 ## Uninstall
 
@@ -74,5 +74,4 @@ If deployed via Argo CD, delete the Application (cascade prunes the release).
 ## What is deliberately not here
 
 - `verifyImages` / cosign rules (policy-controller owns signatures)
-- Audit → Enforce rollout (#17)
 - Helm CI policy drift checks (#18)

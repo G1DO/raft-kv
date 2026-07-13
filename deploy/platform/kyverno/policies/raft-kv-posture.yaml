@@ -1,11 +1,11 @@
-# Phase D #16 — Kyverno posture policies for raft-kv workloads.
+# Phase D #16–#17 — Kyverno posture policies for raft-kv workloads.
 #
 # Apply after Kyverno is installed (#15):
 #   kubectl apply -f deploy/platform/kyverno/policies/
 #
-# Default mode is Audit (#17 switches to Enforce). Policies match
-# deploy/helm/raft-kv/values.yaml (securityContext, probes, memory limit).
-# CPU limits are intentionally not required (Raft latency; ADR-008).
+# failureAction: Enforce (#17) — non-compliant pods are denied at admission.
+# Policies match deploy/helm/raft-kv/values.yaml (securityContext, probes,
+# memory limit). CPU limits are intentionally not required (Raft latency; ADR-008).
 ---
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
@@ -27,7 +27,7 @@ spec:
                 matchLabels:
                   app: raft-kv
       validate:
-        failureAction: Audit
+        failureAction: Enforce
         message: >-
           raft-kv pods must set pod securityContext runAsNonRoot and uid/gid/fsGroup 65532
           (distroless :nonroot).
@@ -49,7 +49,7 @@ spec:
                 matchLabels:
                   app: raft-kv
       validate:
-        failureAction: Audit
+        failureAction: Enforce
         message: >-
           The raft-kv container must define memory requests and limits (chart default 128Mi).
         pattern:
@@ -72,7 +72,7 @@ spec:
                 matchLabels:
                   app: raft-kv
       validate:
-        failureAction: Audit
+        failureAction: Enforce
         message: >-
           The raft-kv container must define startup, liveness, and readiness HTTP probes
           on the metrics port.
@@ -100,17 +100,10 @@ spec:
                 matchLabels:
                   app: raft-kv
       validate:
-        failureAction: Audit
+        failureAction: Enforce
         message: Privileged containers are not allowed on raft-kv pods.
         foreach:
           - list: request.object.spec.containers
-            deny:
-              conditions:
-                any:
-                  - key: "{{ element.securityContext.privileged || '' }}"
-                    operator: Equals
-                    value: true
-          - list: "{{ request.object.spec.initContainers[] || `[]` }}"
             deny:
               conditions:
                 any:
@@ -128,17 +121,10 @@ spec:
                 matchLabels:
                   app: raft-kv
       validate:
-        failureAction: Audit
+        failureAction: Enforce
         message: allowPrivilegeEscalation must not be true on raft-kv pods.
         foreach:
           - list: request.object.spec.containers
-            deny:
-              conditions:
-                any:
-                  - key: "{{ element.securityContext.allowPrivilegeEscalation || '' }}"
-                    operator: Equals
-                    value: true
-          - list: "{{ request.object.spec.initContainers[] || `[]` }}"
             deny:
               conditions:
                 any:
