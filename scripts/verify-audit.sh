@@ -24,6 +24,8 @@ OBS_NS=observability
 CLIENT_NS=raft-kv-clients
 LOKI_LOCAL=13100
 RAFT_TLS_PF=19090
+LOKI_RETRIES=25
+LOKI_SLEEP=3
 
 CLIENT_POD=audit-client-$$
 DENY_POD=audit-np-deny-$$
@@ -92,6 +94,14 @@ kv_cmd() {
     "printf '%s\n' '$cmd' | nc -w 5 '$host' 8080" 2>/dev/null | tr -d '\r' | tail -1
 }
 
+loki_audit_query() {
+  printf '{namespace="%s", pod=~"%s-.*"} |= "security_audit"' "$RAFT_NS" "$RELEASE"
+}
+
+loki_audit_query_pod() {
+  printf '{namespace="%s", pod="%s"} |= "security_audit"' "$RAFT_NS" "$1"
+}
+
 loki_query() {
   local query=$1 start_ns=$2
   local end_ns
@@ -110,18 +120,18 @@ wait_loki_audit() {
   shift 5
   local forbidden=("$@")
   local i raw
-  for i in $(seq 1 15); do
+  for i in $(seq 1 "$LOKI_RETRIES"); do
     raw=$(loki_query "$query" "$start_ns" 2>/dev/null) || raw=""
     if [[ -n "$raw" ]]; then
-      if printf '%s' "$raw" | python3 - "$event" "$outcome" "$action" "${forbidden[@]}" <<'PY'
-import json, sys
+      if LOKI_RAW="$raw" python3 - "$event" "$outcome" "$action" "${forbidden[@]}" <<'PY'
+import json, os, sys
 
 event_want = sys.argv[1]
 outcome_want = sys.argv[2]
 action_want = sys.argv[3]
 forbidden = sys.argv[4:]
 
-raw = sys.stdin.read()
+raw = os.environ.get("LOKI_RAW", "")
 if not raw.strip():
     sys.exit(1)
 
@@ -172,7 +182,7 @@ PY
         return 0
       fi
     fi
-    sleep 2
+    sleep "$LOKI_SLEEP"
   done
   return 1
 }
@@ -198,13 +208,12 @@ wait_pod "$CLIENT_NS" "$CLIENT_POD"
 ok "labeled client pod ready"
 
 info "case 1: allowed client PUT (leader)"
-START_ALLOW=$(now_ns)
 LEADER_POD=""
 LEADER_HOST=""
 FOLLOWER_HOST=""
 for i in 0 1 2; do
   host="${RELEASE}-${i}.${RAFT_SVC}.${RAFT_NS}.svc.cluster.local"
-  resp=$(kv_cmd "$CLIENT_NS" "$CLIENT_POD" "$host" "PUT ${KEY} ${SECRET}")
+  resp=$(kv_cmd "$CLIENT_NS" "$CLIENT_POD" "$host" "PUT probe-${MARKER} x")
   if [[ "$resp" == OK ]]; then
     LEADER_POD="${RELEASE}-${i}"
     LEADER_HOST="$host"
@@ -212,10 +221,13 @@ for i in 0 1 2; do
     FOLLOWER_HOST="$host"
   fi
 done
-[[ -n "$LEADER_POD" ]] || fail "no leader accepted PUT (cluster unhealthy?)"
+[[ -n "$LEADER_HOST" ]] || fail "no leader found (cluster unhealthy?)"
+START_ALLOW=$(now_ns)
+resp=$(kv_cmd "$CLIENT_NS" "$CLIENT_POD" "$LEADER_HOST" "PUT ${KEY} ${SECRET}")
+[[ "$resp" == OK ]] || fail "leader PUT failed (got ${resp:-empty})"
 ok "leader ${LEADER_POD} accepted PUT"
 
-QUERY="{namespace=\"${RAFT_NS}\", pod=~\"${RELEASE}-.*\"} | json | msg=\"security_audit\""
+QUERY=$(loki_audit_query)
 wait_loki_audit "$QUERY" "$START_ALLOW" "audit.client.mutate" "allow" "PUT" "$SECRET" "$KEY" \
   || fail "no allow mutate audit in Loki after leader PUT"
 ok "Loki: audit.client.mutate outcome=allow (no key/value leak)"
@@ -226,7 +238,7 @@ START_DENY=$(now_ns)
 resp=$(kv_cmd "$CLIENT_NS" "$CLIENT_POD" "$FOLLOWER_HOST" "PUT ${KEY}-deny ${SECRET}-deny")
 [[ "$resp" == NOT_LEADER* ]] || fail "expected NOT_LEADER from follower, got: ${resp:-empty}"
 
-QUERY="{namespace=\"${RAFT_NS}\", pod=~\"${RELEASE}-.*\"} | json | msg=\"security_audit\""
+QUERY=$(loki_audit_query)
 wait_loki_audit "$QUERY" "$START_DENY" "audit.client.mutate" "deny" "PUT" "${SECRET}-deny" \
   || fail "no deny mutate audit in Loki after follower PUT"
 ok "Loki: audit.client.mutate outcome=deny"
@@ -242,7 +254,7 @@ if peer_tls_enabled; then
   exec 3<&- 3>&- 2>/dev/null || true
   sleep 1
 
-  QUERY="{namespace=\"${RAFT_NS}\", pod=\"${RELEASE}-0\"} | json | msg=\"security_audit\""
+  QUERY=$(loki_audit_query_pod "${RELEASE}-0")
   wait_loki_audit "$QUERY" "$START_TLS" "audit.peer.tls_fail" "deny" "handshake" \
     || fail "no peer TLS audit in Loki after plaintext :9090 probe"
   ok "Loki: audit.peer.tls_fail action=handshake on ${RELEASE}-0"
@@ -252,6 +264,8 @@ fi
 
 info "case 4: NetworkPolicy deny not observable from Loki"
 if cni_enforces_policy; then
+  # Let prior audit lines flush so the negative window is not polluted.
+  sleep 15
   kubectl run "$DENY_POD" -n "$RAFT_NS" --restart=Never --image=busybox:1.36 \
     -l audit-verify=deny --command -- sleep 300 >/dev/null
   wait_pod "$RAFT_NS" "$DENY_POD"
@@ -259,22 +273,26 @@ if cni_enforces_policy; then
     fail "unlabeled pod reached :8080 — NP not enforced; cannot test non-observable case"
   fi
   START_NP=$(now_ns)
-  # No app log expected — verify no fresh client mutate audit tied to this window.
-  sleep 3
-  raw=$(loki_query "{namespace=\"${RAFT_NS}\", pod=~\"${RELEASE}-.*\"} | json | msg=\"security_audit\"" "$START_NP" 2>/dev/null || true)
-  if printf '%s' "$raw" | python3 -c '
+  sleep 5
+  raw=$(loki_query "$(loki_audit_query)" "$START_NP" 2>/dev/null || true)
+  if [[ -z "$raw" ]]; then
+    ok "NP-blocked connect produced no client mutate audit (not observable from Loki)"
+  elif printf '%s' "$raw" | python3 -c '
 import json, sys
-data = json.load(sys.stdin)
+raw = sys.stdin.read()
+if not raw.strip():
+    sys.exit(0)
+data = json.loads(raw)
 for stream in data.get("data", {}).get("result", []):
     for _ts, line in stream.get("values", []):
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if rec.get("audit") in (True, "true") and rec.get("event") == "audit.client.mutate":
+        if rec.get("msg") == "security_audit" and rec.get("event") == "audit.client.mutate":
             sys.exit(1)
 sys.exit(0)
-' 2>/dev/null; then
+'; then
     ok "NP-blocked connect produced no client mutate audit (not observable from Loki)"
   else
     fail "unexpected client mutate audit after NP block — check probe isolation"

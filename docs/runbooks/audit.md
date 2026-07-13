@@ -273,8 +273,9 @@ OK: NP-blocked connect produced no client mutate audit (not observable from Loki
 OK: audit verification complete
 ```
 
-Run on your kind cluster after `./scripts/k8s-up.sh` and observability sync to
-record a verified date here.
+**Verified on kind** (2026-07-13): `./scripts/verify-audit.sh` — all four cases
+passed with `tls.enabled=true`, Calico, and observability stack deployed via
+`./scripts/k8s-up.sh`.
 
 ---
 
