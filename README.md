@@ -589,10 +589,20 @@ heartbeat interval** (replication is heartbeat-driven), and throughput **collaps
 past ~8 concurrent writers** as writes hit the 3 s commit timeout — a contention
 cliff, documented rather than hidden.
 
-A scripted demo of an induced failure → re-election → successful write:
+A scripted demo of an induced failure → re-election → successful write
+(local processes, not Kubernetes):
 
 ```bash
 ./scripts/chaos-demo.sh
+```
+
+For Kind/Chaos Mesh lab trials (Phase F), use the reusable measurement harness —
+unique write load, pluggable `--inject`, MTTR to first post-fault write **and**
+time to 3/3 Ready, integrity readback, percentiles, ADR-013 cleanup:
+
+```bash
+./scripts/chaos-harness.sh --trials 3 --inject 'true'   # noop smoke
+# later: --inject './scripts/chaos-inject-….sh' for #23–#26
 ```
 
 <!-- TODO: record an asciinema cast of chaos-demo.sh and link it here:

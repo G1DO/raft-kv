@@ -67,12 +67,14 @@ Before the next trial or before declaring a run complete:
 3. StatefulSet is **3/3 Ready**; harness stopped.
 4. Postmortem timeline records UTC end + the cleanup commands.
 
-A helper script in Phase F should encode this checklist; failing cleanup is a
-failed trial, not a footnote.
+`scripts/chaos-harness.sh` (Phase F #22) encodes this checklist after every
+trial and at run end; failing cleanup is a failed trial, not a footnote.
+Inject scripts should label Chaos CRs with `raft-kv-chaos=true` so the
+harness can delete leftovers.
 
 ### Out of scope for this ADR
 
-- Implementing the measurement harness (#22) or individual experiments.
+- Individual fault experiments (#23–#26) and postmortems (#27).
 - Production multi-tenant Chaos Mesh operations.
 - Claiming clock-skew or partition results before the pinned versions above
   are actually installed and verified in the lab.
