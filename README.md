@@ -661,6 +661,7 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
   - [ADR-013](docs/decisions/ADR-013-chaos-lab-environment.md) — chaos lab (kind + Calico + Chaos Mesh 2.8.3)
 - [docs/runbooks/restore.md](docs/runbooks/restore.md) — backup / wipe / disaster restore + MTTR
 - [docs/runbooks/tls-certificates.md](docs/runbooks/tls-certificates.md) — Vault/ESO peer TLS bootstrap, renewal, revocation
+- [docs/runbooks/networkpolicy.md](docs/runbooks/networkpolicy.md) — default-deny NetworkPolicy boundary + verification
 - [deploy/platform/tls-delivery/README.md](deploy/platform/tls-delivery/README.md) — scoped Vault policy + ESO RBAC examples
 - [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; peer mTLS status + M8 residuals.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured election MTTR, throughput, and quorum-loss behaviour, with the exact method.

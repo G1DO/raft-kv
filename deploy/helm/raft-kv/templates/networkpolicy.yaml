@@ -1,0 +1,130 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $fullname := include "raft-kv.fullname" . -}}
+{{- $clientKey := .Values.networkPolicy.client.podLabel.key -}}
+{{- $clientVal := .Values.networkPolicy.client.podLabel.value -}}
+---
+# Deny all ingress to raft-kv pods unless a named allow policy matches.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-default-deny-ingress
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "raft-kv.labels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+---
+# Deny all egress from raft-kv pods unless a named allow policy matches.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-default-deny-egress
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "raft-kv.labels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+---
+# Named ingress allows: client 8080, peer 9090, Prometheus 2112 (ADR-011).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-ingress
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "raft-kv.labels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.client.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{ $clientKey }}: {{ $clientVal | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ports.client }}
+    {{- if .Values.networkPolicy.client.allowSameNamespace }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{ $clientKey }}: {{ $clientVal | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ports.client }}
+    {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "raft-kv.labels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ports.raft }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.prometheus.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.prometheus.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ports.metrics }}
+---
+# Named egress allows: cluster DNS, peer Raft RPC, optional OTLP (ADR-011).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-allow-egress
+  labels:
+    {{- include "raft-kv.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "raft-kv.labels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dns.podLabels | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "raft-kv.labels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.ports.raft }}
+    {{- if .Values.tracing.otlpEndpoint }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.otlp.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.otlp.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ include "raft-kv.otlpPort" . }}
+    {{- end }}
+{{- end }}

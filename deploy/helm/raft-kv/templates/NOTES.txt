@@ -33,3 +33,10 @@ Provision Secrets with Vault/ESO (set tls.eso.enabled=true + vault refs) or the 
 
 Missing material fails closed (init CrashLoop).
 {{- end }}
+{{- if .Values.networkPolicy.enabled }}
+
+NetworkPolicy default-deny is on (ADR-011). Client traffic must originate from pods
+labeled {{ .Values.networkPolicy.client.podLabel.key }}={{ .Values.networkPolicy.client.podLabel.value | quote }}
+in namespace {{ .Values.networkPolicy.client.namespace }} (or use kubectl port-forward).
+Requires a CNI that enforces NetworkPolicy (Calico/Cilium).
+{{- end }}

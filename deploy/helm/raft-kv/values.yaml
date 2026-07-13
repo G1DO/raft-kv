@@ -141,6 +141,35 @@ metrics:
 tracing:
   otlpEndpoint: ""
 
+# Default-deny NetworkPolicy boundary (Phase C #11, ADR-011). Requires a CNI
+# that enforces NetworkPolicy (Calico/Cilium in the M8 lab — not plain kindnet).
+# Enforcement is off-cluster: policies are no-ops until the CNI applies them.
+networkPolicy:
+  enabled: true
+  # Authorized KV clients: namespace + label (both required unless
+  # allowSameNamespace is true for Jobs that must share the release ns).
+  client:
+    namespace: raft-kv-clients
+    podLabel:
+      key: raft-kv.client
+      value: "true"
+    allowSameNamespace: false
+  prometheus:
+    namespace: observability
+    podLabels:
+      app.kubernetes.io/name: prometheus
+  dns:
+    namespace: kube-system
+    podLabels:
+      k8s-app: kube-dns
+  # Egress to OTLP is rendered only when tracing.otlpEndpoint is non-empty.
+  # podLabels must match the receiver pods (Tempo default below).
+  otlp:
+    namespace: observability
+    podLabels:
+      app.kubernetes.io/name: tempo
+    port: 4318
+
 # Peer mTLS paths and Secret mounts (ADR-009 / ADR-010). Default on: the chart
 # always passes --raft-tls-{cert,key,ca} and expects one Secret per ordinal
 # named {{ fullname }}-<N>-tls with keys tls.crt, tls.key, ca.crt (Phase B ESO

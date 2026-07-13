@@ -54,3 +54,16 @@ replicas can never disagree.
 {{- end -}}
 {{- join "," $peers -}}
 {{- end -}}
+
+{{/*
+OTLP TCP port for NetworkPolicy egress. Prefer the port in tracing.otlpEndpoint;
+fall back to networkPolicy.otlp.port when the endpoint has no ":port" suffix.
+*/}}
+{{- define "raft-kv.otlpPort" -}}
+{{- $ep := .Values.tracing.otlpEndpoint -}}
+{{- if contains ":" $ep -}}
+{{- (split ":" $ep)._1 -}}
+{{- else -}}
+{{- .Values.networkPolicy.otlp.port -}}
+{{- end -}}
+{{- end -}}
