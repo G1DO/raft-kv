@@ -302,6 +302,8 @@ These are real and deliberate. Listed here so reviewers don't have to find them 
 | Peer mTLS identity | Vault PKI + per-ordinal DNS SANs (ESO delivery) | Shared/wildcard cluster cert | [ADR-009](decisions/ADR-009-mtls-peer-identity.md) |
 | Peer mTLS rollout | Fail closed when mounts missing; plaintext only if TLS unset | Silent TLS→plaintext fallback | [ADR-010](decisions/ADR-010-mtls-rollout.md) |
 | NetworkPolicy boundary | Labeled clients + peer/Prometheus selectors; default-deny | Allow client port from anywhere | [ADR-011](decisions/ADR-011-networkpolicy-boundary.md) |
+| NetworkPolicy egress | DNS + peers + conditional OTLP only | Wide cluster egress / API egress | [ADR-014](decisions/ADR-014-networkpolicy-egress.md) |
+| Workload Kubernetes identity | Dedicated SA, no API token, no workload RBAC | `default` SA with automounted token | Phase C #13; `./scripts/verify-workload-identity.sh` |
 | Security audit events | App `audit=true` JSON → Loki; actor unauthenticated | Claim Promtail = K8s API audit / log values | [ADR-012](decisions/ADR-012-security-audit-events.md) |
 | Chaos lab environment | kind + Calico + Chaos Mesh 2.8.3 in `chaos-mesh` ns | kindnet-only / chaos in `raft-kv` ns | [ADR-013](decisions/ADR-013-chaos-lab-environment.md) |
 

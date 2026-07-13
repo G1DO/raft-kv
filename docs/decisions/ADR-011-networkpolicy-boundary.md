@@ -122,5 +122,5 @@ out of M8 scope.
   `raft-kv.client: "true"` (or use break-glass port-forward and say so).
 - D5’s chaos lab must use a NetworkPolicy-capable CNI so partition
   experiments and these policies can coexist (#24).
-- Threat-model T7/T9 status updates wait for #12 verification, not this ADR
-  alone.
+- Threat-model T7/T9 and workload RBAC posture updated in Phase C #14
+  ([docs/threat-model.md](../threat-model.md)).

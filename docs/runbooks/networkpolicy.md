@@ -2,7 +2,9 @@
 
 Operator guide for the **Phase C #11** ingress/egress boundary on Kubernetes.
 Selectors and port matrix are fixed in
-[ADR-011](../decisions/ADR-011-networkpolicy-boundary.md).
+[ADR-011](../decisions/ADR-011-networkpolicy-boundary.md). Egress exceptions
+(DNS, peers, OTLP) and workload API posture are in
+[ADR-014](../decisions/ADR-014-networkpolicy-egress.md).
 
 **Enforcement requires a CNI that implements NetworkPolicy** (Calico or Cilium).
 Stock **kindnet does not enforce** — policies are no-ops until a capable CNI is
@@ -84,6 +86,20 @@ kubectl delete pod -n default -l app=raft-kv   # re-plug CNI
 Greenfield kind clusters should set `networking.disableDefaultCNI: true` in
 `deploy/kind-config.yaml` and install Calico before workloads (scripted install
 is a Phase F follow-up).
+
+---
+
+## Workload identity (Phase C #13)
+
+Raft-kv pods use dedicated ServiceAccount `raft-kv` with
+`automountServiceAccountToken: false` and no workload RBAC. Verify:
+
+```bash
+./scripts/verify-workload-identity.sh --live --namespace default
+```
+
+See threat-model residuals “Phase C (network + workload identity)” and
+[ADR-014](../decisions/ADR-014-networkpolicy-egress.md).
 
 ---
 

@@ -657,6 +657,7 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
   - [ADR-009](docs/decisions/ADR-009-mtls-peer-identity.md) — peer mTLS cert/identity (Vault PKI + per-ordinal SANs)
   - [ADR-010](docs/decisions/ADR-010-mtls-rollout.md) — peer mTLS fail-closed rollout (no plaintext fallback)
   - [ADR-011](docs/decisions/ADR-011-networkpolicy-boundary.md) — NetworkPolicy client/peer/metrics boundary
+  - [ADR-014](docs/decisions/ADR-014-networkpolicy-egress.md) — NetworkPolicy egress (DNS, peers, OTLP) + workload API posture
   - [ADR-012](docs/decisions/ADR-012-security-audit-events.md) — app security audit events (not K8s API audit)
   - [ADR-013](docs/decisions/ADR-013-chaos-lab-environment.md) — chaos lab (kind + Calico + Chaos Mesh 2.8.3)
 - [docs/runbooks/restore.md](docs/runbooks/restore.md) — backup / wipe / disaster restore + MTTR

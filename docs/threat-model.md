@@ -2,8 +2,11 @@
 
 This is a learning prototype, not a production system. The threats below
 are real — listed so reviewers don't have to find them by reading the
-code, and so remaining M8 work (NetworkPolicy, audit, Vault/ESO) has a
-clear scope.
+code, and so remaining M8 work (audit, Vault/ESO hardening) has a
+clear scope. Phase C network boundary and workload identity are implemented
+([ADR-011](decisions/ADR-011-networkpolicy-boundary.md),
+[ADR-014](decisions/ADR-014-networkpolicy-egress.md);
+[runbook](../runbooks/networkpolicy.md)).
 
 ## Scope
 
@@ -53,9 +56,9 @@ configured ([ADR-009](decisions/ADR-009-mtls-peer-identity.md),
 | T4 | **T**ampering | An operator (or attacker with disk access) can edit the WAL / state / snapshot files | Files are plaintext, no checksums beyond what record framing provides. | **Partial.** [ADR-004](decisions/ADR-004-panic-on-corrupt-file.md) — the node panics on parse failure, but a *valid-looking* tampered record will be accepted. Out of scope for this project. |
 | T5 | **R**epudiation | No audit log: we cannot prove who did what | No security audit stream yet ([ADR-012](decisions/ADR-012-security-audit-events.md) designs it). | **Open.** Track B (M6 observability) covers operability; security audit is later M8. |
 | T6 | **I**nformation disclosure | Cluster traffic is readable by anyone on the LAN | Peer path: mTLS encrypts Raft RPC when configured. Client path: still plaintext line protocol (keys/values on the wire). | **Partial.** Peer mitigated under mTLS; client TLS is follow-on. |
-| T7 | **D**enial of service | Connection-per-RPC ([ADR-003](decisions/ADR-003-json-tcp-vs-grpc.md)) makes the raft port cheap to exhaust | Any reachable attacker can open connections faster than `callRPC` retires them. There is no rate limit, no connection cap, no per-peer accounting. mTLS raises handshake cost but does not rate-limit. | **Open.** Mitigated in M8 by a default-deny NetworkPolicy (only peers and clients can reach the ports). Not fixed at the application layer. |
+| T7 | **D**enial of service | Connection-per-RPC ([ADR-003](decisions/ADR-003-json-tcp-vs-grpc.md)) makes the raft port cheap to exhaust | Any **reachable** attacker can open connections faster than `callRPC` retires them. There is no rate limit, no connection cap, no per-peer accounting. mTLS raises handshake cost but does not rate-limit. | **Mitigated (K8s boundary)** when default-deny NetworkPolicy is **enforced** by a capable CNI (Calico/Cilium — [ADR-011](decisions/ADR-011-networkpolicy-boundary.md), [runbook](../runbooks/networkpolicy.md), verified 2026-07-13). Only peer pods may reach :9090. **Not fixed** at the application layer; a compromised peer or labeled client can still connect. |
 | T8 | **D**enial of service | A malicious peer can send a `RequestVote` with a higher term and force every node to step down repeatedly | The protocol requires step-down on a higher term. Forged voters need a CA-trusted cert whose SAN matches a cluster member id (T1). A **compromised real member** can still thrash elections. | **Mitigated** against network forgers when mTLS is on (same residuals as T1). |
-| T9 | **E**levation of privilege | A client can perform membership changes via the line protocol | `ADD_SERVER` / `REMOVE_SERVER` verbs are exposed on the client port at [internal/server/raft_server.go](../internal/server/raft_server.go) with no authorisation check. Any client that can connect can grow or shrink the cluster. | **Open.** Fix is a client-side auth story (not scoped to M8); for now, rely on network policy to keep the client port inaccessible to untrusted callers. |
+| T9 | **E**levation of privilege | A client can perform membership changes via the line protocol | `ADD_SERVER` / `REMOVE_SERVER` verbs are exposed on the client port at [internal/server/raft_server.go](../internal/server/raft_server.go) with no authorisation check. Any client that can connect can grow or shrink the cluster. | **Open (app layer).** **Reduced (K8s boundary)** when NetworkPolicy is enforced: only pods labeled `raft-kv.client=true` in namespace `raft-kv-clients` may reach :8080 ([ADR-011](decisions/ADR-011-networkpolicy-boundary.md)). That is **network-authorized**, not authenticated — no proof of who runs `ADD_SERVER`. Client auth is out of M8 scope. |
 
 ## Residuals after Phase A (peer mTLS)
 
@@ -68,8 +71,17 @@ Operators should treat these as still true even when the chart has
 | **Leaf private-key theft** | Mounted `tls.key` in the pod (or stolen Secret) is enough to speak as that ordinal | Limit Secret RBAC; Phase B keeps paths out of Git; treat node compromise as voter compromise |
 | **Restart-required reload** | raft-kv loads cert/key/CA at startup; no in-process hot reload in M8 | After ESO/Vault renews files, restart the affected StatefulSet pod ([ADR-009](decisions/ADR-009-mtls-peer-identity.md)) |
 | **Plaintext when TLS unset** | Fail-closed applies only when paths are set but mounts missing; unset TLS is intentional plaintext (tests, `k8s-up.sh --set tls.enabled=false`) | Never call an unset-TLS deployment “secure”; Helm default is mTLS on |
-| **Client port** | Still unauthenticated plaintext (T2, T6 partial, T9) | NetworkPolicy / not exposing the client Service publicly |
+| **Client port** | Still unauthenticated plaintext (T2, T6 partial, T9 app layer) | NetworkPolicy limits :8080 to labeled clients in `raft-kv-clients` when enforced; not exposing the client Service publicly; `kubectl port-forward` is operator break-glass only |
 | **Connection-per-RPC + TLS cost** | Each RPC does a fresh TLS handshake ([ADR-003](decisions/ADR-003-json-tcp-vs-grpc.md)) | Acceptable at demo scale; can amplify election-timer pressure under extreme load (seen in race tests) |
+| **NetworkPolicy not enforced** | kindnet and other CNIs ignore NetworkPolicy | Install Calico/Cilium before claiming T7/T9 K8s mitigations ([ADR-013](decisions/ADR-013-chaos-lab-environment.md), [runbook](../runbooks/networkpolicy.md)) |
+| **Compromised labeled client** | A pod with `raft-kv.client=true` can use the full line protocol including membership verbs | Treat client namespace/label as a trust boundary; app auth still required for real multi-tenant use |
+
+## Residuals after Phase C (network + workload identity)
+
+| Residual | Why it remains | Ops implication |
+|---|---|---|
+| **Workload Kubernetes API** | App does not call the API | Dedicated SA `raft-kv`, `automountServiceAccountToken: false`, no workload Role/RoleBinding (`./scripts/verify-workload-identity.sh`) |
+| **Egress beyond DNS/peers/OTLP** | Default-deny egress | No arbitrary HTTPS or API egress ([ADR-014](decisions/ADR-014-networkpolicy-egress.md)); OTLP only when tracing enabled |
 
 ## What is *not* a threat (and why)
 
@@ -82,18 +94,16 @@ Operators should treat these as still true even when the chart has
 
 ## What M8 will fix (remaining)
 
-Already done (Phase A): **peer mTLS** mitigates T1, T3, T8 and the peer
-half of T6 when TLS is configured — verified by the transport matrix and
-three-node cluster tests.
+Already done:
+
+- **Phase A — peer mTLS** mitigates T1, T3, T8 and the peer half of T6 when TLS is configured.
+- **Phase B — Vault PKI + ESO delivery** (operational cert lifecycle; rotation drill documents restart-required).
+- **Phase C — default-deny NetworkPolicy** reduces T7 and T9 blast radius at the Kubernetes boundary when a capable CNI enforces policies ([ADR-011](decisions/ADR-011-networkpolicy-boundary.md), [ADR-014](decisions/ADR-014-networkpolicy-egress.md), [runbook](../runbooks/networkpolicy.md), `./scripts/verify-networkpolicy.sh`).
+- **Phase C — least-privilege workload ServiceAccount** (dedicated `raft-kv` SA, no API token, no workload RBAC; `./scripts/verify-workload-identity.sh`).
 
 Still in rough order:
 
-1. **Vault PKI + ESO delivery (Phase B).** Operational cert lifecycle for
-   the ADR-009 SAN contract; rotation drill documents restart-required.
-2. **Default-deny NetworkPolicy.** Closes T7 in the Kubernetes deployment
-   and reduces blast radius for everything else.
-3. **Least-privilege ServiceAccount + RBAC** on the workload pod itself.
-4. **Audit logs to Loki.** Closes T5 to the extent observability gives a
+1. **Audit logs to Loki.** Closes T5 to the extent observability gives a
    security signal ([ADR-012](decisions/ADR-012-security-audit-events.md)).
 
 Client-side authentication, client TLS, and an authorisation model for
