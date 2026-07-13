@@ -62,6 +62,12 @@ kubectl get clusterpolicy raft-kv-posture
 
 Policies ship in **Enforce** mode (#17).
 
+Chart/policy drift (CI + local, #18):
+
+```bash
+./scripts/verify-kyverno-posture-drift.sh
+```
+
 ## Uninstall
 
 ```bash
@@ -74,4 +80,3 @@ If deployed via Argo CD, delete the Application (cascade prunes the release).
 ## What is deliberately not here
 
 - `verifyImages` / cosign rules (policy-controller owns signatures)
-- Helm CI policy drift checks (#18)

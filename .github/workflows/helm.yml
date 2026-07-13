@@ -16,19 +16,24 @@ on:
   pull_request:
     paths:
       - "deploy/helm/**"
+      - "deploy/platform/kyverno/policies/**"
       - "scripts/verify-tls-secret-hygiene.sh"
+      - "scripts/verify-kyverno-posture-drift.sh"
       - ".github/workflows/helm.yml"
   push:
     branches: [main]
     paths:
       - "deploy/helm/**"
+      - "deploy/platform/kyverno/policies/**"
       - "scripts/verify-tls-secret-hygiene.sh"
+      - "scripts/verify-kyverno-posture-drift.sh"
       - ".github/workflows/helm.yml"
 
 env:
   CHART: deploy/helm/raft-kv
   KUBECONFORM_VERSION: v0.7.0
   KUBERNETES_VERSION: "1.31.0"
+  KYVERNO_CLI_VERSION: v1.18.2
 
 jobs:
   lint:
@@ -67,3 +72,10 @@ jobs:
                 -kubernetes-version "$KUBERNETES_VERSION"
       - name: TLS secret hygiene (Phase B #10)
         run: ./scripts/verify-tls-secret-hygiene.sh
+      - name: Install Kyverno CLI
+        run: |
+          curl -sSL "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_CLI_VERSION}/kyverno-cli_${KYVERNO_CLI_VERSION#v}_linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin kyverno
+          kyverno version
+      - name: Kyverno posture drift (Phase D #18)
+        run: ./scripts/verify-kyverno-posture-drift.sh
