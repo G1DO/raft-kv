@@ -92,10 +92,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		// Process the command
+		verb := opOf(command)
 		result := s.processCommand(command)
+		if isSecurityRelevantVerb(verb) {
+			emitClientAudit(s.logger, clientAudit{
+				Event:   auditEventForVerb(verb),
+				Outcome: outcomeFromClientResult(result),
+				Node:    "single-node",
+				Remote:  conn.RemoteAddr().String(),
+				Action:  verb,
+			})
+		}
 
-		// Send response
 		conn.Write([]byte(result + "\n"))
 	}
 }

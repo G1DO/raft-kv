@@ -2,7 +2,7 @@
 
 This is a learning prototype, not a production system. The threats below
 are real — listed so reviewers don't have to find them by reading the
-code, and so remaining M8 work (audit, Vault/ESO hardening) has a
+code, and so remaining M8 work (chaos) has a
 clear scope. Phase C network boundary and workload identity are implemented
 ([ADR-011](decisions/ADR-011-networkpolicy-boundary.md),
 [ADR-014](decisions/ADR-014-networkpolicy-egress.md);
@@ -54,7 +54,7 @@ configured ([ADR-009](decisions/ADR-009-mtls-peer-identity.md),
 | T2 | **S**poofing | A client can pose as any other client | The line protocol carries no auth and no `ClientId` (see [design.md "Known correctness gaps"](design.md)). | **Open.** Fix when the protocol gains `ClientId`/`RequestId` (parked). |
 | T3 | **T**ampering | Peer RPC traffic can be modified in flight | Without TLS: plaintext TCP. With mTLS: TLS integrity on the peer path; no TLS→plaintext fallback ([ADR-010](decisions/ADR-010-mtls-rollout.md)). | **Mitigated** for peer traffic when mTLS is on. Client port still plaintext. |
 | T4 | **T**ampering | An operator (or attacker with disk access) can edit the WAL / state / snapshot files | Files are plaintext, no checksums beyond what record framing provides. | **Partial.** [ADR-004](decisions/ADR-004-panic-on-corrupt-file.md) — the node panics on parse failure, but a *valid-looking* tampered record will be accepted. Out of scope for this project. |
-| T5 | **R**epudiation | No audit log: we cannot prove who did what | No security audit stream yet ([ADR-012](decisions/ADR-012-security-audit-events.md) designs it). | **Open.** Track B (M6 observability) covers operability; security audit is later M8. |
+| T5 | **R**epudiation | No audit log: we cannot prove who did what | App security audit to Loki ([ADR-012](decisions/ADR-012-security-audit-events.md), [runbook](../runbooks/audit.md), `./scripts/verify-audit.sh`). | **Partially mitigated.** Network-source audit only (`actor=unauthenticated`, `remote` = `host:port`). Lab retention (~24h). NP drops invisible to the app. User attribution needs client auth (out of M8). |
 | T6 | **I**nformation disclosure | Cluster traffic is readable by anyone on the LAN | Peer path: mTLS encrypts Raft RPC when configured. Client path: still plaintext line protocol (keys/values on the wire). | **Partial.** Peer mitigated under mTLS; client TLS is follow-on. |
 | T7 | **D**enial of service | Connection-per-RPC ([ADR-003](decisions/ADR-003-json-tcp-vs-grpc.md)) makes the raft port cheap to exhaust | Any **reachable** attacker can open connections faster than `callRPC` retires them. There is no rate limit, no connection cap, no per-peer accounting. mTLS raises handshake cost but does not rate-limit. | **Mitigated (K8s boundary)** when default-deny NetworkPolicy is **enforced** by a capable CNI (Calico/Cilium — [ADR-011](decisions/ADR-011-networkpolicy-boundary.md), [runbook](../runbooks/networkpolicy.md), verified 2026-07-13). Only peer pods may reach :9090. **Not fixed** at the application layer; a compromised peer or labeled client can still connect. |
 | T8 | **D**enial of service | A malicious peer can send a `RequestVote` with a higher term and force every node to step down repeatedly | The protocol requires step-down on a higher term. Forged voters need a CA-trusted cert whose SAN matches a cluster member id (T1). A **compromised real member** can still thrash elections. | **Mitigated** against network forgers when mTLS is on (same residuals as T1). |
@@ -83,6 +83,15 @@ Operators should treat these as still true even when the chart has
 | **Workload Kubernetes API** | App does not call the API | Dedicated SA `raft-kv`, `automountServiceAccountToken: false`, no workload Role/RoleBinding (`./scripts/verify-workload-identity.sh`) |
 | **Egress beyond DNS/peers/OTLP** | Default-deny egress | No arbitrary HTTPS or API egress ([ADR-014](decisions/ADR-014-networkpolicy-egress.md)); OTLP only when tracing enabled |
 
+## Residuals after Phase E (app security audit)
+
+| Residual | Why it remains | Ops implication |
+|---|---|---|
+| **No client identity** | Line protocol has no auth; audit rows use `actor=unauthenticated` | You see *which IP:port* tried `PUT`, not *which user* — not repudiation-grade attribution |
+| **Lab retention** | Loki demo stack (~24h / 2Gi PVC) | Not WORM or compliance storage; extend retention separately if needed |
+| **NP deny invisible** | Packets dropped before the process accepts | Do not expect `audit.*` lines for pure NetworkPolicy blocks ([runbook](../runbooks/audit.md)) |
+| **Operational log hygiene** | M6 lines are separate from audit | Query with `audit="true"`; audit emit path never records values ([ADR-012](decisions/ADR-012-security-audit-events.md)) |
+
 ## What is *not* a threat (and why)
 
 - **A crashed node leaking data.** Files are plaintext but the data is
@@ -100,11 +109,11 @@ Already done:
 - **Phase B — Vault PKI + ESO delivery** (operational cert lifecycle; rotation drill documents restart-required).
 - **Phase C — default-deny NetworkPolicy** reduces T7 and T9 blast radius at the Kubernetes boundary when a capable CNI enforces policies ([ADR-011](decisions/ADR-011-networkpolicy-boundary.md), [ADR-014](decisions/ADR-014-networkpolicy-egress.md), [runbook](../runbooks/networkpolicy.md), `./scripts/verify-networkpolicy.sh`).
 - **Phase C — least-privilege workload ServiceAccount** (dedicated `raft-kv` SA, no API token, no workload RBAC; `./scripts/verify-workload-identity.sh`).
+- **Phase E — app security audit to Loki** partially mitigates T5 ([ADR-012](decisions/ADR-012-security-audit-events.md), [runbook](../runbooks/audit.md), `./scripts/verify-audit.sh`).
 
 Still in rough order:
 
-1. **Audit logs to Loki.** Closes T5 to the extent observability gives a
-   security signal ([ADR-012](decisions/ADR-012-security-audit-events.md)).
+1. **Chaos Mesh experiments + postmortems** (Phase F).
 
 Client-side authentication, client TLS, and an authorisation model for
 membership changes (T2, T9) are *not* in M8 and are noted here so they

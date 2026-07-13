@@ -104,7 +104,8 @@ loki:
 
 # Promtail tails every pod's stdout/stderr on the node and ships it to Loki —
 # this is how the app's slog JSON lines become queryable (and how the trace_id
-# derived field gets something to match on).
+# derived field gets something to match on). App security audit lines
+# (audit=true, ADR-012) use the same path — see docs/runbooks/audit.md.
 promtail:
   config:
     clients:

@@ -78,7 +78,8 @@ would need client auth (out of M8).
 
 - **Path:** existing stdout JSON → Promtail → Loki (no second sink in M8).
 - **Query:** filter `audit="true"` (or `{event=~"audit\\..+"}`) so audit
-  lines are separable from operational logs.
+  lines are separable from operational logs. LogQL examples:
+  [runbook](../runbooks/audit.md).
 - **Retention:** whatever the observability stack is configured for (demo
   Loki/Prometheus-style short retention, e.g. on the order of **24h** in
   [deploy/observability/values.yaml](../../deploy/observability/values.yaml)
@@ -116,7 +117,8 @@ Unnecessary given Promtail→Loki; keep one path.
   boundary; #20 documents LogQL examples with `audit="true"`; #21 verifies
   allow/deny cases and updates threat-model T5 with the unauthenticated-actor
   residual.
-- T5 remains **Open** until #21; this ADR is the contract, not the proof.
+- T5 remains **partially mitigated** after #21; this ADR is the contract. Full
+  closure needs client authentication (out of M8).
 - Operators querying Loki for “who deleted key X” will see source address and
   verb at best — not a named user.
 - No change to Kubernetes API-server logging is required to complete M8 app

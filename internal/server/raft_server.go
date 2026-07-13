@@ -215,15 +215,28 @@ func (s *RaftServer) handleConnection(conn net.Conn) {
 		reqLog := s.log.With("trace_id", traceID, "node", s.cfg.ID, "remote_addr", conn.RemoteAddr().String())
 		ctx = context.WithValue(ctx, traceIDKey{}, traceID)
 		ctx = context.WithValue(ctx, loggerKey{}, reqLog)
-		reqLog.Info("request_started", "command", command)
+		verb := opOf(command)
+		reqLog.Info("request_started", "op", verb)
 		result := s.processCommand(ctx, command)
 		class := resultClass(result)
+		if isSecurityRelevantVerb(verb) {
+			emitClientAudit(s.log, clientAudit{
+				Event:     auditEventForVerb(verb),
+				Outcome:   outcomeFromClientResult(result),
+				Node:      s.cfg.ID,
+				Term:      s.raft.CurrentTerm(),
+				Remote:    conn.RemoteAddr().String(),
+				Action:    verb,
+				RequestID: requestIDFromCommand(command),
+				TraceID:   traceID,
+			})
+		}
 		span.SetAttributes(attribute.String("raftkv.result", class))
 		if class == "error" || class == "timeout" {
 			span.SetStatus(codes.Error, result)
 		}
 		span.End()
-		reqLog.Info("request_finished", "op", opOf(command), "result", class)
+		reqLog.Info("request_finished", "op", verb, "result", class)
 		conn.Write([]byte(result + "\n"))
 	}
 }

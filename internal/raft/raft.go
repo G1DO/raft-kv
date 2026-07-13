@@ -1078,15 +1078,7 @@ type RPCResponse struct {
 // StartRPCServer starts listening for incoming RPCs from other nodes.
 // With peer mTLS configured, the listener requires and verifies client certificates.
 func (r *Raft) StartRPCServer(addr string) error {
-	var (
-		listener net.Listener
-		err      error
-	)
-	if m := r.peerMTLS(); m != nil {
-		listener, err = tls.Listen("tcp", addr, m.serverTLSConfig())
-	} else {
-		listener, err = net.Listen("tcp", addr)
-	}
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -1094,17 +1086,47 @@ func (r *Raft) StartRPCServer(addr string) error {
 	r.listener = listener
 	r.rpcAddr = listener.Addr().String()
 
-	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				return // listener closed
-			}
-			go r.handleRPC(conn)
-		}
-	}()
+	go r.serveRPC(listener)
 
 	return nil
+}
+
+func (r *Raft) serveRPC(listener net.Listener) {
+	if m := r.peerMTLS(); m != nil {
+		r.serveMTLSRPC(listener, m)
+		return
+	}
+	r.servePlainRPC(listener)
+}
+
+func (r *Raft) servePlainRPC(listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			return // listener closed
+		}
+		go r.handleRPC(conn)
+	}
+}
+
+func (r *Raft) serveMTLSRPC(listener net.Listener, m *mtlsState) {
+	cfg := m.serverTLSConfig()
+	for {
+		raw, err := listener.Accept()
+		if err != nil {
+			return // listener closed
+		}
+		go func(raw net.Conn) {
+			remote := raw.RemoteAddr().String()
+			tlsConn := tls.Server(raw, cfg)
+			if err := tlsConn.Handshake(); err != nil {
+				r.emitPeerTLSAudit(remote, "handshake", "deny")
+				raw.Close()
+				return
+			}
+			r.handleRPC(tlsConn)
+		}(raw)
+	}
 }
 
 // handleRPC processes one incoming RPC request.
@@ -1123,6 +1145,7 @@ func (r *Raft) handleRPC(conn net.Conn) {
 		claimed := claimedRPCSender(msg)
 		cert := clientLeafCert(conn)
 		if claimed == "" || cert == nil || !certMatchesIdentity(cert, claimed, r.peerIdentities()) {
+			r.emitPeerTLSAudit(conn.RemoteAddr().String(), "identity", "deny")
 			r.logger.Warn("rpc_identity_rejected",
 				"node", r.id,
 				"rpc", msg.Type,
@@ -1184,6 +1207,7 @@ func (r *Raft) callRPC(peer string, rpcType string, args interface{}, reply inte
 		tconn := tls.Client(raw, m.clientTLSConfig(host))
 		if err := tconn.Handshake(); err != nil {
 			_ = raw.Close()
+			r.emitPeerTLSAudit(peer, "handshake", "deny")
 			r.logger.Warn("rpc_failed", "node", r.id, "peer", peer, "rpc", rpcType, "stage", "tls_handshake", "error", err)
 			return false
 		}
@@ -1510,6 +1534,13 @@ func (r *Raft) IsLeader() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state == Leader
+}
+
+// CurrentTerm returns the node's current Raft term (0 before the first election).
+func (r *Raft) CurrentTerm() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.currentTerm
 }
 
 // LeaderID returns the id of the leader this node last heard from, or "" if

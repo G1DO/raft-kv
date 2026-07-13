@@ -109,6 +109,7 @@ Grafana (kubectl -n $OBS_NS port-forward svc/grafana 3000:80):
 
 Loki (Grafana > Explore, datasource Loki):
   {namespace="$RAFT_NS", pod=~"raft-kv-.*"} | json | msg =~ "election_won|stepping_down|rpc_failed"
+  {namespace="$RAFT_NS", pod=~"raft-kv-.*"} | json | audit="true"
   Any request line carries trace_id — click the derived-field link to jump to
   its Tempo trace.
 
