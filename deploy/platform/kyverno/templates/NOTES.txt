@@ -1,0 +1,8 @@
+Kyverno platform chart (Helm subchart kyverno 3.8.2).
+
+Controller namespace: kyverno
+
+  kubectl get pods -n kyverno
+
+Posture policies for raft-kv are added separately (Phase D #16).
+Image signatures: sigstore policy-controller (deploy/policy/, ADR-006).

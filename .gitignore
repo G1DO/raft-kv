@@ -15,3 +15,4 @@ npm-debug.log*
 
 # Helm umbrella-chart dependency tarballs (rebuilt from Chart.lock)
 /deploy/observability/charts/
+/deploy/platform/kyverno/charts/

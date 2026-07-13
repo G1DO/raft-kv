@@ -1,0 +1,12 @@
+apiVersion: v2
+name: kyverno-platform
+description: >-
+  Platform install of Kyverno for M8 pod-posture admission. Deployed as its OWN
+  Argo CD Application (deploy/argo/kyverno-app.yaml) — separate from
+  deploy/helm/raft-kv and from sigstore policy-controller (ADR-006).
+type: application
+version: 0.1.0
+dependencies:
+  - name: kyverno
+    version: 3.8.2
+    repository: https://kyverno.github.io/kyverno/

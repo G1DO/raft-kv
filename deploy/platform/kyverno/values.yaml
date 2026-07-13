@@ -1,0 +1,16 @@
+# Umbrella values for the pinned Kyverno subchart (Helm chart 3.8.2 / app v1.18.2).
+# Posture policies for raft-kv are added in policies/ (Phase D #16); this file
+# only installs the admission engine.
+
+kyverno:
+  # Single-replica defaults suit the kind lab (one control-plane node). For HA,
+  # raise admissionController.replicas (and background/cleanup/reports) per
+  # https://kyverno.io/docs/installation/methods/#high-availability-installation
+  admissionController:
+    replicas: 1
+  backgroundController:
+    replicas: 1
+  cleanupController:
+    replicas: 1
+  reportsController:
+    replicas: 1

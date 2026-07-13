@@ -1,0 +1,38 @@
+# Argo CD Application: Kyverno admission controller as a SEPARATE Application
+# from raft-kv (and from sigstore policy-controller).
+#
+# Kyverno enforces pod posture (#16+); policy-controller enforces image
+# signatures (ADR-006). Installing them separately keeps lifecycle and blast
+# radius isolated.
+#
+# Bootstrap once with: kubectl apply -f deploy/argo/kyverno-app.yaml
+# (Argo runs `helm dependency build` from Chart.lock — subchart .tgz is not
+# committed.)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/G1DO/raft-kv
+    targetRevision: main
+    path: deploy/platform/kyverno
+    helm:
+      releaseName: kyverno
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true

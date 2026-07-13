@@ -477,6 +477,17 @@ can't yet verify cosign's modern *bundle*-format signatures (only attestations),
 verifies the legacy one; that admit path is config-correct and confirms on the next signed
 publish. Full runbook: [deploy/policy/README.md](deploy/policy/README.md).
 
+## Pod posture admission (Kyverno)
+
+Image signatures and pod hardening use **separate** admission engines
+([ADR-006](docs/decisions/ADR-006-policy-controller-vs-kyverno.md)): policy-controller
+verifies cosign; [Kyverno](https://kyverno.io/) will enforce non-root, capability,
+probe, and resource posture on `raft-kv` pods (M8 Phase D). The controller installs
+as platform infrastructure — its own Argo CD Application
+([deploy/argo/kyverno-app.yaml](deploy/argo/kyverno-app.yaml),
+[deploy/platform/kyverno/](deploy/platform/kyverno/)) — not inside the app chart.
+Lab: `./scripts/install-kyverno.sh`. Policies and Audit→Enforce rollout are #16–#17.
+
 ---
 
 ## Observability
