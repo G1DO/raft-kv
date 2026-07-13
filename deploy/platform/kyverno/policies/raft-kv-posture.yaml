@@ -1,0 +1,147 @@
+# Phase D #16 — Kyverno posture policies for raft-kv workloads.
+#
+# Apply after Kyverno is installed (#15):
+#   kubectl apply -f deploy/platform/kyverno/policies/
+#
+# Default mode is Audit (#17 switches to Enforce). Policies match
+# deploy/helm/raft-kv/values.yaml (securityContext, probes, memory limit).
+# CPU limits are intentionally not required (Raft latency; ADR-008).
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: raft-kv-posture
+  labels:
+    app: raft-kv
+    policies.kyverno.io/category: Pod-Security
+spec:
+  background: true
+  rules:
+    - name: pod-security-context
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app: raft-kv
+      validate:
+        failureAction: Audit
+        message: >-
+          raft-kv pods must set pod securityContext runAsNonRoot and uid/gid/fsGroup 65532
+          (distroless :nonroot).
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              fsGroup: 65532
+
+    - name: main-container-memory-limits
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app: raft-kv
+      validate:
+        failureAction: Audit
+        message: >-
+          The raft-kv container must define memory requests and limits (chart default 128Mi).
+        pattern:
+          spec:
+            containers:
+              - name: raft-kv
+                resources:
+                  limits:
+                    memory: "?*"
+                  requests:
+                    memory: "?*"
+
+    - name: main-container-probes
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app: raft-kv
+      validate:
+        failureAction: Audit
+        message: >-
+          The raft-kv container must define startup, liveness, and readiness HTTP probes
+          on the metrics port.
+        pattern:
+          spec:
+            containers:
+              - name: raft-kv
+                startupProbe:
+                  httpGet:
+                    path: "?*"
+                livenessProbe:
+                  httpGet:
+                    path: "?*"
+                readinessProbe:
+                  httpGet:
+                    path: "?*"
+
+    - name: disallow-privileged
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app: raft-kv
+      validate:
+        failureAction: Audit
+        message: Privileged containers are not allowed on raft-kv pods.
+        foreach:
+          - list: request.object.spec.containers
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.securityContext.privileged || '' }}"
+                    operator: Equals
+                    value: true
+          - list: "{{ request.object.spec.initContainers[] || `[]` }}"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.securityContext.privileged || '' }}"
+                    operator: Equals
+                    value: true
+
+    - name: disallow-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              selector:
+                matchLabels:
+                  app: raft-kv
+      validate:
+        failureAction: Audit
+        message: allowPrivilegeEscalation must not be true on raft-kv pods.
+        foreach:
+          - list: request.object.spec.containers
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.securityContext.allowPrivilegeEscalation || '' }}"
+                    operator: Equals
+                    value: true
+          - list: "{{ request.object.spec.initContainers[] || `[]` }}"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.securityContext.allowPrivilegeEscalation || '' }}"
+                    operator: Equals
+                    value: true

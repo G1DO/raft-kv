@@ -52,8 +52,15 @@ kubectl get pods -n kyverno
 kubectl get crd clusterpolicies.kyverno.io policies.kyverno.io
 ```
 
-All controller pods should be `Running`. No `ClusterPolicy` objects are expected
-until #16.
+All controller pods should be `Running`. Posture policies:
+
+```bash
+./scripts/apply-kyverno-policies.sh
+kubectl get clusterpolicy raft-kv-posture
+./scripts/verify-kyverno-posture.sh --live
+```
+
+Policies ship in **Audit** mode (#17 → Enforce).
 
 ## Uninstall
 
@@ -67,6 +74,5 @@ If deployed via Argo CD, delete the Application (cascade prunes the release).
 ## What is deliberately not here
 
 - `verifyImages` / cosign rules (policy-controller owns signatures)
-- Posture `ClusterPolicy` manifests (#16)
 - Audit → Enforce rollout (#17)
 - Helm CI policy drift checks (#18)
