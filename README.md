@@ -602,7 +602,8 @@ time to 3/3 Ready, integrity readback, percentiles, ADR-013 cleanup:
 
 ```bash
 ./scripts/chaos-harness.sh --trials 3 --inject 'true'   # noop smoke
-# later: --inject './scripts/chaos-inject-….sh' for #23–#26
+./scripts/chaos-harness.sh --trials 5 --inject './scripts/chaos-inject-pod-kill.sh'  # #23
+# later: network-partition / packet-loss / clock-skew inject scripts for #24–#26
 ```
 
 <!-- TODO: record an asciinema cast of chaos-demo.sh and link it here:

@@ -307,6 +307,7 @@ These are real and deliberate. Listed here so reviewers don't have to find them 
 | Security audit events | App `audit=true` JSON → Loki; actor unauthenticated | Claim Promtail = K8s API audit / log values | [ADR-012](decisions/ADR-012-security-audit-events.md); [runbook](runbooks/audit.md); `./scripts/verify-audit.sh` |
 | Chaos lab environment | kind + Calico + Chaos Mesh 2.8.3 in `chaos-mesh` ns | kindnet-only / chaos in `raft-kv` ns | [ADR-013](decisions/ADR-013-chaos-lab-environment.md) |
 | Chaos measurement harness | Bounded multi-trial write load + `--inject` hook; MTTR write + 3/3 Ready percentiles | Single best-run timing / process-only `chaos-demo.sh` | `./scripts/chaos-harness.sh` (Phase F #22) |
+| Chaos pod-kill experiment | Kill current leader once/trial; STS rejoins from PVC; integrity + MTTR via harness | Local `chaos-demo.sh` process SIGKILL | `./scripts/chaos-inject-pod-kill.sh` (Phase F #23) |
 
 ## What I learned (cross-reference)
 

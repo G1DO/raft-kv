@@ -392,6 +392,9 @@ run_trial() {
   ready_at_end=$(ready_count)
   event ready_sample trial="$trial" when=inject_end ready="$ready_at_end"
 
+  # Leader kill drops its port-forward — refresh before measuring first write.
+  start_client_pf >/dev/null 2>&1 || true
+
   log "trial $trial: wait first post-fault committed write"
   first_line=$(wait_first_write_after "$inject_start") \
     || fail "trial $trial: no committed write after inject within timeout"
