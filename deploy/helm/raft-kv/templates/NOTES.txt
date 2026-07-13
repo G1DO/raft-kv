@@ -40,3 +40,8 @@ labeled {{ .Values.networkPolicy.client.podLabel.key }}={{ .Values.networkPolicy
 in namespace {{ .Values.networkPolicy.client.namespace }} (or use kubectl port-forward).
 Requires a CNI that enforces NetworkPolicy (Calico/Cilium).
 {{- end }}
+{{- if .Values.serviceAccount.create }}
+
+Workload ServiceAccount {{ include "raft-kv.serviceAccountName" . }} (automountServiceAccountToken=false).
+No Kubernetes API RBAC is granted to the app pods.
+{{- end }}

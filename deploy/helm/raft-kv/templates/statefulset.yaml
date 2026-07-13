@@ -30,6 +30,8 @@ spec:
         prometheus.io/path: /metrics
       {{- end }}
     spec:
+      serviceAccountName: {{ include "raft-kv.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}

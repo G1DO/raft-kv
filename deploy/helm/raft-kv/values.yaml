@@ -170,6 +170,14 @@ networkPolicy:
       app.kubernetes.io/name: tempo
     port: 4318
 
+# Workload identity (Phase C #13). Dedicated SA for raft-kv pods; no Kubernetes
+# API token mounted and no RBAC unless a future feature needs in-cluster API access.
+serviceAccount:
+  create: true
+  # Empty => release fullname (e.g. raft-kv). Set to reuse an existing SA.
+  name: ""
+  automountServiceAccountToken: false
+
 # Peer mTLS paths and Secret mounts (ADR-009 / ADR-010). Default on: the chart
 # always passes --raft-tls-{cert,key,ca} and expects one Secret per ordinal
 # named {{ fullname }}-<N>-tls with keys tls.crt, tls.key, ca.crt (Phase B ESO

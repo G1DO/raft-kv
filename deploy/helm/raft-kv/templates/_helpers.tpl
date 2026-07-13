@@ -67,3 +67,14 @@ fall back to networkPolicy.otlp.port when the endpoint has no ":port" suffix.
 {{- .Values.networkPolicy.otlp.port -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Workload ServiceAccount name. create=true => dedicated SA (default: fullname).
+*/}}
+{{- define "raft-kv.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "raft-kv.fullname" .) .Values.serviceAccount.name | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
