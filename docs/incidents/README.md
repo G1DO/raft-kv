@@ -31,7 +31,14 @@ Every postmortem uses the same sections (in order):
 
 ## Caveat on numbers
 
-Tables below cite **sample kind lab runs** (often `n=1`) recorded while building
-Phase F. They prove the inject + harness path works; they are **not** published
-percentiles. Multi-trial statistics (≥5 clean trials per class) are Phase F
-**#28**.
+Phase F **#28** published **n=5** clean trials per class (kind `raft-kv`, Calico,
+Chaos Mesh 2.8.3, 2026-07-14). Raw TSVs live under gitignored `backups/phase-f-28-*`
+(see each postmortem’s Measured MTTR table).
+
+**How to read MTTR:** harness `mttr_write_s` / `mttr_ready_s` are wall-clock from
+inject start → first post-fault committed write / 3/3 Ready. For
+network-partition and clock-skew that includes the held fault window (inject
+returns after heal). Packet-loss deletes `NetworkChaos` after probe proofs (may
+skip remaining duration). Integrity is a sample of pre-inject acks, not a full
+WAL scan. Single-node kind + Chaos Mesh netem can briefly livelock elections
+after loss clear; the inject may bounce pods (PVCs intact) before failing a trial.

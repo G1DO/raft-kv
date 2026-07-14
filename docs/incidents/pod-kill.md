@@ -59,17 +59,18 @@ Sample harness trial (kind, 2026-07-14; approximate wall times from local lab):
 
 ## Measured MTTR table
 
-Sample after port-forward refresh fix (stale PF to dead leader inflated an
-earlier trial to ~124s — discarded as harness artifact, not Raft MTTR):
+Phase F **#28** — five clean trials (kind, 2026-07-14). Earlier ~124s outlier was
+a stale port-forward artifact (discarded); harness now refreshes client PFs and
+restarts the load writer after inject.
 
-| Metric | Sample (n=1) |
+| Metric | n=5 |
 |---|---|
-| `mttr_write_s` (inject → first committed PUT) | ~3.9 s |
-| `mttr_ready_s` (inject → 3/3 Ready) | ~5.3 s |
-| Leader before → after | changed (e.g. `raft-kv-1` → `raft-kv-0`) |
-| Integrity | pass |
+| `mttr_write_s` p50 / p95 / max | **3.630** / **3.874** / 3.882 s |
+| `mttr_ready_s` p50 / p95 / max | **9.455** / **12.549** / 12.855 s |
+| `leader_changed` | 5/5 |
+| Integrity | 5/5 |
 
-Full p50/p95 across ≥5 trials → Phase F **#28**.
+Raw: `backups/phase-f-28-*/pod-kill/chaos-harness-*.tsv` (gitignored).
 
 ## Customer / data impact
 
@@ -101,5 +102,5 @@ Full p50/p95 across ≥5 trials → Phase F **#28**.
 |---|---|
 | Reusable harness + pod-kill inject (#22–#23) | **Done** |
 | Refresh client port-forwards immediately after inject | **Done** (harness) |
-| Run ≥5 clean trials and publish percentiles | **Planned** (#28) |
+| Run ≥5 clean trials and publish percentiles | **Done** (#28) |
 | Prefer PodChaos path once Chaos Mesh is always installed | **Done** (inject prefers CRD; kubectl fallback remains) |

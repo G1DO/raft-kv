@@ -57,17 +57,22 @@ Sample harness trial (kind, 2026-07-14):
 
 ## Measured MTTR table
 
-| Metric | Sample (n=1) |
-|---|---|
-| Target | follower (`raft-kv-0`) |
-| Probe success | ok=8 fail=0 |
-| `leader_changed` | **0** |
-| `mttr_write_s` | ~26.8 s (includes held duration) |
-| `mttr_ready_s` | ~27.2 s |
-| TimeChaos after inject | **none** |
-| Integrity | pass |
+Phase F **#28** — five clean trials (`CLOCK_SKEW_OFFSET=+5m`,
+`CLOCK_SKEW_DURATION=15s` held then rolled back). MTTR includes the held skew
+window.
 
-≥5 trials → **#28**. Leader-skew escalation not run in this write-up.
+| Metric | n=5 |
+|---|---|
+| Target | one non-leader each trial |
+| Probe success (lab) | typically 8/8 OK |
+| `leader_changed` | **0/5** |
+| `mttr_write_s` p50 / p95 / max | **21.763** / **22.724** / 22.789 s |
+| `mttr_ready_s` p50 / p95 / max | **22.133** / **23.077** / 23.142 s |
+| TimeChaos after inject | **none** (every trial) |
+| Integrity | 5/5 |
+
+Raw: `backups/phase-f-28-*/clock-skew/chaos-harness-*.tsv` (gitignored).
+Leader-skew escalation not run in this write-up.
 
 ## Customer / data impact
 
@@ -103,4 +108,4 @@ Sample harness trial (kind, 2026-07-14):
 | Non-leader clock-skew inject with forced rollback (#26) | **Done** |
 | Document ReadIndex vs lease expectation in postmortem | **Done** (this doc) |
 | Optional: escalate to leader skew after repeatable follower case | **Planned** (not blocking) |
-| ≥5 trials + publish | **Planned** (#28) |
+| ≥5 trials + publish | **Done** (#28) |

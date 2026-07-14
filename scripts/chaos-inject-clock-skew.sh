@@ -36,6 +36,7 @@ label_key=${LABEL_KV%%=*}
 label_val=${LABEL_KV#*=}
 
 PF_PIDS=""
+CHAOS_NAME=""
 cleanup_pf() {
   if [[ -n "${PF_PIDS:-}" ]]; then
     # shellcheck disable=SC2086
@@ -43,7 +44,15 @@ cleanup_pf() {
   fi
   PF_PIDS=""
 }
-trap cleanup_pf EXIT INT TERM
+cleanup() {
+  cleanup_pf
+  if [[ -n "${CHAOS_NAME:-}" ]]; then
+    log "cleanup: deleting TimeChaos/${CHAOS_NAME}"
+    kubectl -n "$NS" delete timechaos "$CHAOS_NAME" --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || true
+    CHAOS_NAME=""
+  fi
+}
+trap cleanup EXIT INT TERM
 
 log() { echo "  [clock-skew] $*" >&2; }
 fail() { echo "FAIL: clock-skew: $*" >&2; exit 1; }
@@ -252,6 +261,7 @@ fi
 log "leader_before=$leader_before target=$target offset=$OFFSET duration=$DURATION trial=$TRIAL"
 
 name="raft-kv-time-skew-t${TRIAL}-$(date -u +%s)"
+CHAOS_NAME=$name
 secs=$(duration_seconds)
 t0=$(date +%s)
 
@@ -339,6 +349,7 @@ fi
 
 log "deleting TimeChaos/$name to roll back clock skew"
 kubectl -n "$NS" delete timechaos "$name" --wait=true --timeout=60s >/dev/null
+CHAOS_NAME=""
 assert_no_leftover_timechaos
 
 start_client_pfs >/dev/null 2>&1 || true

@@ -84,19 +84,22 @@ Cluster: kind `raft-kv`, Calico, Chaos Mesh **2.8.3** in `chaos-mesh`,
 raft-kv in `default` with default-deny NetworkPolicy.
 
 ```
-./scripts/chaos-harness.sh --trials 1 \
-  --inject './scripts/chaos-inject-network-partition.sh'
-# old leader: ERROR: timeout waiting for commit
-# majority: OK; leader raft-kv-0→raft-kv-1; integrity=1; NP still present
-
-PACKET_LOSS_PERCENT=25 ./scripts/chaos-harness.sh --trials 1 \
-  --inject './scripts/chaos-inject-packet-loss.sh'
-# probes ok=12 fail=0; leadership changed recorded; integrity=1
-
-CLOCK_SKEW_OFFSET=+5m ./scripts/chaos-harness.sh --trials 1 \
-  --inject './scripts/chaos-inject-clock-skew.sh'
-# target=follower; probes ok; leader_changed=0; TimeChaos gone; integrity=1
+# Full Phase F #28 batch (≥5 clean trials per class → backups/phase-f-28-*/)
+./scripts/chaos-phase-f-28.sh --trials 5
 ```
+
+Published n=5 (p50 / p95 / max), `mttr_write_s`:
+
+| Class | write | ready | integrity | leader_changed |
+|---|---|---|---|---|
+| pod-kill | 3.630 / 3.874 / 3.882 | 9.455 / 12.549 / 12.855 | 5/5 | 5/5 |
+| network-partition | 22.685 / 23.157 / 23.259 | 23.044 / 23.460 / 23.549 | 5/5 | 5/5 |
+| packet-loss (25%) | 11.425 / 14.991 / 15.307 | 11.831 / 15.275 / 15.589 | 5/5 | 4/5 |
+| clock-skew (+5m follower) | 21.763 / 22.724 / 22.789 | 22.133 / 23.077 / 23.142 | 5/5 | 0/5 |
+
+Caveats: partition/skew MTTR includes the held fault window; packet-loss deletes
+Chaos after probes; single-node kind lab only. Details:
+[docs/incidents/](../incidents/README.md).
 
 ## Cleanup
 
@@ -116,6 +119,6 @@ Incident write-ups for each fault class (same template):
 - [packet-loss](../incidents/packet-loss.md)
 - [clock-skew](../incidents/clock-skew.md)
 
-Index: [docs/incidents/README.md](../incidents/README.md). Multi-trial percentile
-publish is Phase F **#28**.
+Index: [docs/incidents/README.md](../incidents/README.md). Multi-trial percentiles
+published in Phase F **#28** (tables above + each postmortem).
 

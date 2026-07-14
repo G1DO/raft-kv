@@ -57,17 +57,24 @@ Sample harness trial (kind, 2026-07-14):
 
 ## Measured MTTR table
 
-| Metric | Sample (n=1) |
+Phase F **#28** — five clean trials (`PACKET_LOSS_PERCENT=25`). Inject deletes
+`NetworkChaos` after probe proofs (may skip remaining duration) so MTTR is
+inject wall-clock through harness recovery, not necessarily a full 15–30s hold.
+If elections livelock after netem clear on single-node kind, the inject may bounce
+pods (PVCs intact) once before failing.
+
+| Metric | n=5 |
 |---|---|
-| Probe success | ok=12 fail=0 |
-| Probe latency | p50≈52 ms · p95≈63 ms · max≈66 ms |
-| `leader_changed` | 1 (this sample) |
-| `mttr_write_s` | ~23.3 s (includes held duration) |
-| `mttr_ready_s` | ~23.7 s |
-| Integrity | pass |
+| Probe success (per trial) | ≥1 OK required (lab runs were typically 12/12) |
+| `mttr_write_s` p50 / p95 / max | **11.425** / **14.991** / 15.307 s |
+| `mttr_ready_s` p50 / p95 / max | **11.831** / **15.275** / 15.589 s |
+| `leader_changed` | 4/5 |
+| Integrity | 5/5 |
+
+Raw: `backups/phase-f-28-*/packet-loss/chaos-harness-*.tsv` (gitignored).
 
 Note: early all-mesh loss attempts thrash elections; scoped leader↔followers
-is the supported shape. ≥5 trials → **#28**.
+is the supported shape.
 
 ## Customer / data impact
 
@@ -100,5 +107,5 @@ is the supported shape. ≥5 trials → **#28**.
 |---|---|
 | Packet-loss inject with quorum check (#25) | **Done** |
 | Scope loss to leader↔followers (not all-mesh) | **Done** |
-| ≥5 trials + percentile publish | **Planned** (#28) |
+| ≥5 trials + percentile publish | **Done** (#28) |
 | Correlate probe latency with Prometheus commit metrics | **Planned** (optional polish) |

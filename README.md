@@ -609,6 +609,8 @@ PACKET_LOSS_PERCENT=25 ./scripts/chaos-harness.sh --trials 5 \
   --inject './scripts/chaos-inject-packet-loss.sh'  # #25
 CLOCK_SKEW_OFFSET=+5m ./scripts/chaos-harness.sh --trials 3 \
   --inject './scripts/chaos-inject-clock-skew.sh'  # #26
+# Full ≥5-trial batch + summary → backups/phase-f-28-*/ (gitignored):
+./scripts/chaos-phase-f-28.sh --trials 5   # #28
 # Install Chaos Mesh first: ./scripts/chaos-mesh-up.sh  (see docs/runbooks/chaos.md)
 ```
 
@@ -692,8 +694,8 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
 - [docs/runbooks/tls-certificates.md](docs/runbooks/tls-certificates.md) — Vault/ESO peer TLS bootstrap, renewal, revocation
 - [docs/runbooks/networkpolicy.md](docs/runbooks/networkpolicy.md) — default-deny NetworkPolicy boundary + verification
 - [docs/runbooks/audit.md](docs/runbooks/audit.md) — app security audit in Loki (LogQL + `./scripts/verify-audit.sh`)
-- [docs/runbooks/chaos.md](docs/runbooks/chaos.md) — Chaos Mesh 2.8.3 lab + Phase F inject scripts (#23–#26)
-- [docs/incidents/](docs/incidents/) — Phase F postmortems (pod-kill, partition, packet-loss, clock-skew)
+- [docs/runbooks/chaos.md](docs/runbooks/chaos.md) — Chaos Mesh 2.8.3 lab + Phase F injects (#23–#28)
+- [docs/incidents/](docs/incidents/) — Phase F postmortems with n=5 MTTR tables
 - [deploy/platform/tls-delivery/README.md](deploy/platform/tls-delivery/README.md) — scoped Vault policy + ESO RBAC examples
 - [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; peer mTLS status + M8 residuals.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured election MTTR, throughput, and quorum-loss behaviour, with the exact method.

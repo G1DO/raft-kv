@@ -34,6 +34,7 @@ label_key=${LABEL_KV%%=*}
 label_val=${LABEL_KV#*=}
 
 PF_PIDS=""
+CHAOS_NAME=""
 cleanup_pf() {
   if [[ -n "${PF_PIDS:-}" ]]; then
     # shellcheck disable=SC2086
@@ -41,7 +42,15 @@ cleanup_pf() {
   fi
   PF_PIDS=""
 }
-trap cleanup_pf EXIT INT TERM
+cleanup() {
+  cleanup_pf
+  if [[ -n "${CHAOS_NAME:-}" ]]; then
+    log "cleanup: deleting NetworkChaos/${CHAOS_NAME}"
+    kubectl -n "$NS" delete networkchaos "$CHAOS_NAME" --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || true
+    CHAOS_NAME=""
+  fi
+}
+trap cleanup EXIT INT TERM
 
 log() { echo "  [packet-loss] $*" >&2; }
 fail() { echo "FAIL: packet-loss: $*" >&2; exit 1; }
@@ -196,6 +205,7 @@ done
 [[ ${#followers[@]} -eq 2 ]] || fail "expected 2 followers"
 
 name="raft-kv-net-loss-t${TRIAL}-$(date -u +%s)"
+CHAOS_NAME=$name
 secs=$(duration_seconds)
 t0=$(date +%s)
 
@@ -237,14 +247,33 @@ EOF
 log "applied NetworkChaos/$name (leader↔followers @ ${LOSS_PCT}%) — waiting for AllInjected"
 wait_chaos_injected "$name"
 start_client_pfs
-log "waiting 5s for stable leadership under loss"
-sleep 5
+
+# Under loss the cluster may flap briefly — wait until SOME pod is leader
+# before counting probes, otherwise a 12-shot miss spuriously fails #25.
+log "waiting for a leader under loss (up to 30s)"
+leader_live=""
+for i in $(seq 1 30); do
+  leader_live=$(find_leader 2>/dev/null || true)
+  if [[ -n "$leader_live" ]]; then
+    log "leader under loss: $leader_live"
+    break
+  fi
+  sleep 1
+done
+[[ -n "$leader_live" ]] || fail "no leader under ${LOSS_PCT}% loss within 30s"
 
 ok_n=0
 fail_n=0
 latencies=()
 leader_seen=""
-for i in $(seq 1 "$PROBE_PUTS"); do
+attempts=0
+max_attempts=$((PROBE_PUTS * 2))
+while [[ $((ok_n + fail_n)) -lt $PROBE_PUTS && "$attempts" -lt "$max_attempts" ]]; do
+  attempts=$((attempts + 1))
+  i=$((ok_n + fail_n + 1))
+  if (( attempts == 1 || attempts % 6 == 0 )); then
+    start_client_pfs >/dev/null 2>&1 || true
+  fi
   key="loss-t${TRIAL}-p${i}-$(date +%s%N)"
   set +e
   out=$(kv_put_any "$key" "v${i}")
@@ -262,6 +291,8 @@ for i in $(seq 1 "$PROBE_PUTS"); do
   else
     fail_n=$((fail_n + 1))
     log "probe $i/$PROBE_PUTS FAIL ${ms}ms (${who})"
+    # Brief backoff if elections are flapping
+    sleep 0.5
   fi
 done
 
@@ -290,22 +321,53 @@ else
 fi
 log "leadership: ${leader_before} -> ${leader_after} (changed=$leader_changed)"
 
-elapsed=$(( $(date +%s) - t0 ))
-remain=$((secs - elapsed))
-if [[ "$remain" -gt 0 ]]; then
-  log "holding until duration elapses (${remain}s left)"
-  sleep "$remain"
-fi
-
-log "deleting NetworkChaos/$name to remove loss"
+# Delete ASAP after proofs — holding until duration while netem clears can flush
+# delayed RPC and livelock elections (Ready→0) on single-node kind.
+remain=$((secs - ($(date +%s) - t0)))
+log "deleting NetworkChaos/$name to remove loss (after probes; skipped_hold≈${remain}s)"
 kubectl -n "$NS" delete networkchaos "$name" --wait=true --timeout=60s >/dev/null
+CHAOS_NAME=""
 
-# One clean write after removal to show recovery before harness continues.
-start_client_pfs >/dev/null 2>&1 || true
+recover_put() {
+  local i rec
+  for i in $(seq 1 20); do
+    if (( i == 1 || i % 8 == 0 )); then
+      start_client_pfs >/dev/null 2>&1 || true
+    fi
+    set +e
+    rec=$(kv_put_any "loss-recover-t${TRIAL}-$(date +%s)" "1")
+    set -e
+    if [[ "$rec" == OK* ]]; then
+      echo "$rec"
+      return 0
+    fi
+    log "post-loss recovery attempt $i → ${rec:-empty}"
+    sleep 1
+  done
+  return 1
+}
+
 set +e
-rec=$(kv_put_any "loss-recover-t${TRIAL}-$(date +%s)" "1")
+rec=$(recover_put)
+rc=$?
 set -e
+if [[ "$rc" -ne 0 ]]; then
+  log "election livelock after netem clear — bounce raft-kv pods (PVCs intact)"
+  kubectl -n "$NS" delete pod -l app="$RELEASE" --wait=false >/dev/null 2>&1 || true
+  for i in $(seq 1 90); do
+    n=$(kubectl -n "$NS" get pods -l app="$RELEASE" \
+      -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}' \
+      | grep -c '^true$' || true)
+    [[ "$n" -ge 3 ]] && break
+    sleep 1
+  done
+  start_client_pfs >/dev/null 2>&1 || true
+  set +e
+  rec=$(recover_put)
+  rc=$?
+  set -e
+fi
+[[ "$rc" -eq 0 && "$rec" == OK* ]] || fail "no successful PUT after loss removal (last=${rec:-empty})"
 log "post-loss recovery write: $rec"
-[[ "$rec" == OK* ]] || fail "no successful PUT after loss removal"
 
 log "packet-loss inject complete (ok=$ok_n fail=$fail_n leader_changed=$leader_changed)"

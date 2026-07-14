@@ -36,6 +36,7 @@ SETTLE_SEC=2
 READY_TIMEOUT_SEC=180
 OUT_DIR=./backups
 CHAOS_LABEL=raft-kv-chaos=true
+CLIENT_BASE_ROOT=19080
 
 usage() {
   sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
@@ -150,15 +151,21 @@ wait_ready() {
 start_client_pf() {
   # Refresh only port-forwards — do not stop the background load writer.
   stop_port_forwards
-  CLIENT_PORT=()
+  # Drop any stale listeners on this trial's client ports (previous hung PFs).
   local i=0 p port need=0
+  for i in 0 1 2; do
+    port=$((CLIENT_BASE + i))
+    fuser -k "${port}/tcp" >/dev/null 2>&1 || true
+  done
+  i=0
+  CLIENT_PORT=()
   for p in "${RELEASE}-0" "${RELEASE}-1" "${RELEASE}-2"; do
     local phase
     phase=$(kubectl -n "$NS" get pod "$p" -o jsonpath='{.status.phase}' 2>/dev/null || true)
     [[ "$phase" == "Running" ]] || continue
     port=$((CLIENT_BASE + i))
     CLIENT_PORT[$p]=$port
-    kubectl -n "$NS" port-forward "pod/${p}" "${port}:8080" >/tmp/chaos-harness-${p}.log 2>&1 &
+    kubectl -n "$NS" port-forward "pod/${p}" "${port}:8080" >/tmp/chaos-harness-${p}-${port}.log 2>&1 &
     PF_PIDS+=" $!"
     need=$((need + 1))
     i=$((i + 1))
@@ -280,18 +287,18 @@ stop_load() {
 wait_first_write_after() {
   local t0=$1 deadline=$((READY_TIMEOUT_SEC * 2)) i leader ts
   for i in $(seq 1 "$deadline"); do
-    if (( i == 1 || i % 15 == 0 )); then
+    if (( i == 1 || i % 5 == 0 )); then
       start_client_pf >/dev/null 2>&1 || true
     fi
     ts=$(now_unix)
-    # only count writes that occur at/after inject start
-    if python3 -c "import sys; sys.exit(0 if float('$ts') >= float('$t0') else 1)"; then
-      if leader=$(kv_put_ok "ch-${RUN_TAG}-post-$(date +%s%N)" "1" 2>/dev/null); then
-        echo "$ts $leader"
-        return 0
-      fi
+    if leader=$(kv_put_ok "ch-${RUN_TAG}-post-${i}-$(date +%s)" "1" 2>/dev/null); then
+      echo "$ts $leader"
+      return 0
     fi
-    sleep 0.2
+    if (( i % 25 == 0 )); then
+      log "still waiting for first post-fault write (attempt $i/${deadline}, ready=$(ready_count))"
+    fi
+    sleep 0.25
   done
   return 1
 }
@@ -387,15 +394,32 @@ run_trial() {
   set -e
   inject_end=$(now_unix)
   event inject_end trial="$trial" unix="$inject_end" rc="$inj_rc"
-  [[ "$inj_rc" -eq 0 ]] || notes="inject_rc=${inj_rc}"
+
+  # Scrub leftovers immediately — failed injects used to leave NetworkChaos up.
+  leftovers=$(kubectl get podchaos,networkchaos,timechaos,iochaos,httpchaos,stresschaos \
+    -A -l "$CHAOS_LABEL" --no-headers 2>/dev/null | wc -l | tr -d ' ') || leftovers=0
+  if [[ "${leftovers:-0}" -gt 0 ]]; then
+    log "trial $trial: deleting ${leftovers} leftover Chaos CR(s) after inject"
+    kubectl delete podchaos,networkchaos,timechaos,iochaos,httpchaos,stresschaos \
+      -A -l "$CHAOS_LABEL" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$inj_rc" -ne 0 ]]; then
+    wait_ready >/dev/null 2>&1 || true
+    fail "trial $trial: inject exited $inj_rc"
+  fi
 
   ready_at_end=$(ready_count)
   event ready_sample trial="$trial" when=inject_end ready="$ready_at_end"
 
-  # Leader kill drops its port-forward — refresh before measuring first write.
-  start_client_pf >/dev/null 2>&1 || true
+  # New client ports after inject — avoids colliding with inject-script PFs / stale FDs.
+  # Restart load so the writer subshell picks up updated CLIENT_PORT (bash fork copy).
+  stop_load
+  CLIENT_BASE=$((CLIENT_BASE_ROOT + (trial * 10) + (RANDOM % 40)))
+  start_client_pf || fail "trial $trial: client port-forward refresh failed after inject"
+  start_load "$trial"
 
-  log "trial $trial: wait first post-fault committed write"
+  log "trial $trial: wait first post-fault committed write (client_base=$CLIENT_BASE)"
   first_line=$(wait_first_write_after "$inject_start") \
     || fail "trial $trial: no committed write after inject within timeout"
   fw_ts=${first_line%% *}

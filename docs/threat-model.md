@@ -111,13 +111,12 @@ Already done:
 - **Phase C — least-privilege workload ServiceAccount** (dedicated `raft-kv` SA, no API token, no workload RBAC; `./scripts/verify-workload-identity.sh`).
 - **Phase E — app security audit to Loki** partially mitigates T5 ([ADR-012](decisions/ADR-012-security-audit-events.md), [runbook](../runbooks/audit.md), `./scripts/verify-audit.sh`).
 
-Still in rough order:
+- **Phase F — Chaos Mesh lab experiments** (#22–#28) exercise pod-kill, network
+  partition (M8 gate under default-deny), packet loss, and clock skew with
+  published n=5 MTTR samples ([runbook](../runbooks/chaos.md),
+  [incidents](../incidents/), `./scripts/chaos-phase-f-28.sh`).
 
-1. **Chaos Mesh multi-trial publish** (Phase F #28) — harness + injects +
-   postmortems (#22–#27) are in place ([runbook](../runbooks/chaos.md),
-   [incidents](../incidents/)); ≥5 clean trials per fault and published
-   percentiles remain.
-
-Client-side authentication, client TLS, and an authorisation model for
+Still in rough order: none for remaining Phase F chaos publish. Client-side
+authentication, client TLS, and an authorisation model for
 membership changes (T2, T9) are *not* in M8 and are noted here so they
 are not silently forgotten.

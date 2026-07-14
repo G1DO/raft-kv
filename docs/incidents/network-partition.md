@@ -67,20 +67,22 @@ Sample harness trial (kind, 2026-07-14):
 ## Measured MTTR table
 
 Harness clocks inject start → first write / Ready **including** the held
-partition duration (inject script returns after heal), so MTTR here is closer
-to “fault window + heal” than pure election time:
+partition duration (`PARTITION_DURATION=20s` in the #28 batch; inject returns
+after heal), so numbers are “fault window + heal”, not pure election latency.
 
-| Metric | Sample (n=1) |
+Phase F **#28** — five clean trials:
+
+| Metric | n=5 |
 |---|---|
-| Old leader PUT | `ERROR: timeout waiting for commit` (not `OK`) |
-| Majority PUT | `OK` |
-| `mttr_write_s` | ~26.4 s |
-| `mttr_ready_s` | ~26.7 s |
-| Leader before → after | changed |
-| Integrity | pass |
-| Default-deny after | present |
+| Old leader PUT (per trial) | not `OK` (`ERROR: timeout…` / `NOT_LEADER`) |
+| Majority PUT (per trial) | `OK` |
+| `mttr_write_s` p50 / p95 / max | **22.685** / **23.157** / 23.259 s |
+| `mttr_ready_s` p50 / p95 / max | **23.044** / **23.460** / 23.549 s |
+| `leader_changed` | 5/5 |
+| Integrity | 5/5 |
+| Default-deny after | present every trial |
 
-≥5 trials / percentiles → **#28**.
+Raw: `backups/phase-f-28-*/network-partition/chaos-harness-*.tsv` (gitignored).
 
 ## Customer / data impact
 
@@ -114,5 +116,5 @@ to “fault window + heal” than pure election time:
 |---|---|
 | Chaos Mesh 2.8.3 install script + partition inject (#24) | **Done** |
 | Prove NP coexistence on Calico kind | **Done** (this incident) |
-| ≥5 clean partition trials + publish stats | **Planned** (#28) |
+| ≥5 clean partition trials + publish stats | **Done** (#28) |
 | Document leftover-chaos recovery (delete CR + bounce if needed) | **Done** (runbook cleanup; lab note) |

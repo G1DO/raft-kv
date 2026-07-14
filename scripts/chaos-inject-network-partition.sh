@@ -32,6 +32,7 @@ label_key=${LABEL_KV%%=*}
 label_val=${LABEL_KV#*=}
 
 PF_PIDS=""
+CHAOS_NAME=""
 cleanup_pf() {
   if [[ -n "${PF_PIDS:-}" ]]; then
     # shellcheck disable=SC2086
@@ -39,7 +40,17 @@ cleanup_pf() {
   fi
   PF_PIDS=""
 }
-trap cleanup_pf EXIT INT TERM
+cleanup() {
+  cleanup_pf
+  # Always delete the CR — a failed majority assertion used to leave the
+  # partition up and drive an election storm (Ready→0 for subsequent trials).
+  if [[ -n "${CHAOS_NAME:-}" ]]; then
+    log "cleanup: deleting NetworkChaos/${CHAOS_NAME}"
+    kubectl -n "$NS" delete networkchaos "$CHAOS_NAME" --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1 || true
+    CHAOS_NAME=""
+  fi
+}
+trap cleanup EXIT INT TERM
 
 log() { echo "  [partition] $*" >&2; }
 fail() { echo "FAIL: partition: $*" >&2; exit 1; }
@@ -185,11 +196,30 @@ assert_old_leader_cannot_commit() {
   esac
 }
 
+wait_majority_leader() {
+  local old_leader=$1 p is i
+  for i in $(seq 1 45); do
+    for p in "${RELEASE}-0" "${RELEASE}-1" "${RELEASE}-2"; do
+      [[ "$p" == "$old_leader" ]] && continue
+      is=$(metric_gauge "$p" raft_is_leader 2>/dev/null || echo 0)
+      if [[ "$is" == "1" || "$is" == "1.0" ]]; then
+        log "majority leader elected: $p"
+        echo "$p"
+        return 0
+      fi
+    done
+    sleep 1
+  done
+  return 1
+}
+
 assert_majority_can_commit() {
-  local old_leader=$1 key=$2 p resp i
+  local old_leader=$1 key=$2 p resp i maj
+  maj=$(wait_majority_leader "$old_leader") \
+    || fail "majority never elected a leader while partition active"
   # Try every pod that is not the isolated old leader. Refresh PFs periodically.
-  for i in $(seq 1 60); do
-    if (( i == 1 || i % 15 == 0 )); then
+  for i in $(seq 1 45); do
+    if (( i == 1 || i % 10 == 0 )); then
       start_client_pfs >/dev/null 2>&1 || true
     fi
     for p in "${RELEASE}-0" "${RELEASE}-1" "${RELEASE}-2"; do
@@ -203,7 +233,7 @@ assert_majority_can_commit() {
     done
     sleep 1
   done
-  fail "majority did not accept a PUT during partition"
+  fail "majority did not accept a PUT during partition (leader_seen=${maj:-none})"
 }
 
 # ---- main ----
@@ -222,6 +252,7 @@ log "leader=$leader followers=${FOLLOWERS[*]} duration=$DURATION trial=$TRIAL"
 log "NetworkPolicy default-deny ingress+egress present in $NS (unchanged)"
 
 name="raft-kv-net-part-t${TRIAL}-$(date -u +%s)"
+CHAOS_NAME=$name
 secs=$(duration_seconds)
 t0=$(date +%s)
 
@@ -260,8 +291,8 @@ wait_chaos_injected "$name"
 
 start_client_pfs
 # Give the majority time to notice heartbeat loss and elect.
-log "waiting 8s for majority election under partition"
-sleep 8
+log "waiting 10s for majority election under partition"
+sleep 10
 
 key_iso="part-iso-t${TRIAL}-$(date +%s)"
 key_maj="part-maj-t${TRIAL}-$(date +%s)"
@@ -278,6 +309,7 @@ fi
 
 log "deleting NetworkChaos/$name to heal partition"
 kubectl -n "$NS" delete networkchaos "$name" --wait=true --timeout=60s >/dev/null
+CHAOS_NAME=""
 
 np_default_deny_present || fail "default-deny NetworkPolicy disappeared during partition"
 log "default-deny NetworkPolicy still present after partition"
