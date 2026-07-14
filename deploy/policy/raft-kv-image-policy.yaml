@@ -25,7 +25,7 @@ spec:
   # Lowercase g1do: OCI registry paths must be lowercase (matches image.yml and the
   # Argo Application's image.repository). The signed image is published here.
   images:
-    - glob: "ghcr.io/g1do/raft-kv**"
+    - glob: "ghcr.io/g1do/raftkv**"
   authorities:
     - name: github-actions-keyless
       # image.yml signs each image keyless in BOTH cosign formats: the modern Sigstore *bundle*

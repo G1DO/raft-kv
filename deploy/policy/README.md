@@ -10,7 +10,7 @@ this repo's `image.yml` workflow** — turning "we sign our images" from a claim
 enforced control.
 
 - [`raft-kv-image-policy.yaml`](raft-kv-image-policy.yaml) — the `ClusterImagePolicy`:
-  glob `ghcr.io/g1do/raft-kv**`, keyless authority pinned to our workflow identity
+  glob `ghcr.io/g1do/raftkv**`, keyless authority pinned to our workflow identity
   (issuer `https://token.actions.githubusercontent.com`, subject = `…/image.yml@…`),
   Rekor inclusion required.
 - Why policy-controller and not Kyverno: [ADR-006](../../docs/decisions/ADR-006-policy-controller-vs-kyverno.md).
@@ -66,7 +66,7 @@ kubectl run unsigned -n policy-demo --image=busybox:1.36 --restart=Never --comma
 # Our published image -> the gate resolves the tag to a digest and runs keyless verification
 # against our Fulcio identity. A DUAL-SIGNED image (legacy `.sig` present) is admitted; images
 # published before dual-signing are bundle-only and denied (see the limitation note below).
-kubectl run signed -n policy-demo --image=ghcr.io/g1do/raft-kv:main --restart=Never \
+kubectl run signed -n policy-demo --image=ghcr.io/g1do/raftkv:main --restart=Never \
   --dry-run=server --command -- /raft-kv
 
 # Control: the SAME unsigned image in an un-opted-in namespace is admitted, proving the

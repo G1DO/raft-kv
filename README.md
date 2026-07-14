@@ -367,7 +367,7 @@ gracefully on SIGINT/SIGTERM (step down, close listener).
 ## Verifying the published image
 
 CI builds a distroless image and publishes it to
-[`ghcr.io/g1do/raft-kv`](https://github.com/G1DO/raft-kv/pkgs/container/raft-kv) on every
+[`ghcr.io/g1do/raftkv`](https://github.com/G1DO/raft-kv/pkgs/container/raftkv) on every
 push to `main` and every `v*` tag. Each published image is **signed** with
 [cosign](https://github.com/sigstore/cosign) and carries a **SLSA build-provenance** and an
 **SPDX SBOM** attestation. All three are *keyless*: GitHub mints a short-lived OIDC token,
@@ -379,9 +379,9 @@ and verify against that:
 
 ```bash
 # Resolve a tag to its immutable digest reference.
-REF="ghcr.io/g1do/raft-kv@$(crane digest ghcr.io/g1do/raft-kv:main)"
+REF="ghcr.io/g1do/raftkv@$(crane digest ghcr.io/g1do/raftkv:main)"
 # Without crane:
-# REF="ghcr.io/g1do/raft-kv@$(docker buildx imagetools inspect ghcr.io/g1do/raft-kv:main --format '{{.Manifest.Digest}}')"
+# REF="ghcr.io/g1do/raftkv@$(docker buildx imagetools inspect ghcr.io/g1do/raftkv:main --format '{{.Manifest.Digest}}')"
 echo "$REF"
 ```
 
