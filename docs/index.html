@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>raft-kv — Raft key-value store in Go</title>
+  <meta name="description" content="From-scratch distributed key-value store on Raft in Go: consensus, Kubernetes, mTLS, observability, Chaos Mesh.">
+  <meta name="keywords" content="raft, consensus, golang, key-value store, kubernetes, chaos mesh, mtls, distributed systems">
+  <style>
+    :root { color-scheme: light dark; --fg: #1a1a1a; --muted: #555; --link: #0969da; --bg: #fafafa; --card: #fff; --border: #ddd; }
+    @media (prefers-color-scheme: dark) {
+      :root { --fg: #e8e8e8; --muted: #aaa; --link: #58a6ff; --bg: #0d1117; --card: #161b22; --border: #30363d; }
+    }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.55; }
+    main { max-width: 720px; margin: 0 auto; padding: 3rem 1.25rem 4rem; }
+    h1 { font-size: 2rem; margin: 0 0 0.35rem; letter-spacing: -0.02em; }
+    .sub { color: var(--muted); margin: 0 0 1.5rem; }
+    a { color: var(--link); }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.15rem; margin: 1rem 0; }
+    ul { padding-left: 1.2rem; margin: 0.4rem 0; }
+    li { margin: 0.25rem 0; }
+    .meta { font-size: 0.92rem; color: var(--muted); }
+    footer { margin-top: 2.5rem; font-size: 0.9rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>raft-kv</h1>
+    <p class="sub">From-scratch distributed key-value store on the Raft consensus algorithm, written in Go.</p>
+
+    <div class="card">
+      <strong>Repository</strong>
+      <p class="meta"><a href="https://github.com/G1DO/raft-kv2">github.com/G1DO/raft-kv2</a></p>
+      <p>Leader election, log replication, snapshots, dynamic membership — plus Kubernetes Helm, peer mTLS, observability, and Chaos Mesh lab experiments.</p>
+    </div>
+
+    <div class="card">
+      <strong>Documentation</strong>
+      <ul>
+        <li><a href="design.md">Design</a></li>
+        <li><a href="threat-model.md">Threat model</a></li>
+        <li><a href="benchmarks.md">Benchmarks</a></li>
+        <li><a href="decisions/">Architecture decision records</a></li>
+        <li><a href="runbooks/">Runbooks</a> (audit, chaos, NetworkPolicy, TLS, restore)</li>
+        <li><a href="incidents/">Chaos incident postmortems</a></li>
+        <li><a href="diagrams/">Diagrams</a> —
+          <a href="diagrams/rendered/architecture.svg">architecture</a>,
+          <a href="diagrams/rendered/trust-boundary.svg">trust boundary</a>
+        </li>
+      </ul>
+    </div>
+
+    <footer>
+      Keywords: Raft · consensus · Go · key-value · Kubernetes · Chaos Mesh · mTLS · observability
+    </footer>
+  </main>
+</body>
+</html>
