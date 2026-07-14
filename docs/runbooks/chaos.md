@@ -43,6 +43,10 @@ PARTITION_DURATION=30s ./scripts/chaos-harness.sh --trials 5 \
 # #25 packet loss (bounded; quorum stays healthy)
 PACKET_LOSS_PERCENT=25 PACKET_LOSS_DURATION=30s ./scripts/chaos-harness.sh --trials 5 \
   --inject './scripts/chaos-inject-packet-loss.sh'
+
+# #26 clock skew (non-leader first; always rolled back)
+CLOCK_SKEW_OFFSET=+5m CLOCK_SKEW_DURATION=30s ./scripts/chaos-harness.sh --trials 3 \
+  --inject './scripts/chaos-inject-clock-skew.sh'
 ```
 
 Inject scripts label Chaos CRs with `raft-kv-chaos=true`. The harness deletes
@@ -65,6 +69,15 @@ While bounded loss is applied on **leader ↔ followers** (not a full cut):
 - Leadership change is reported explicitly (`changed=0|1`)
 - After CR deletion, a recovery PUT succeeds
 
+### #26 proofs (per trial)
+
+Bounded `TimeChaos` on **one non-leader** (`CLOCK_SKEW_OFFSET`, default `+5m`):
+
+- Cluster stays available (at least one successful PUT under skew)
+- Leadership change yes/no is logged (often `changed=0` — ReadIndex, not leases)
+- TimeChaos is deleted before return — **no leftover skew**
+- Recovery PUT succeeds after rollback
+
 ### Verified on kind (2026-07-14)
 
 Cluster: kind `raft-kv`, Calico, Chaos Mesh **2.8.3** in `chaos-mesh`,
@@ -79,6 +92,10 @@ raft-kv in `default` with default-deny NetworkPolicy.
 PACKET_LOSS_PERCENT=25 ./scripts/chaos-harness.sh --trials 1 \
   --inject './scripts/chaos-inject-packet-loss.sh'
 # probes ok=12 fail=0; leadership changed recorded; integrity=1
+
+CLOCK_SKEW_OFFSET=+5m ./scripts/chaos-harness.sh --trials 1 \
+  --inject './scripts/chaos-inject-clock-skew.sh'
+# target=follower; probes ok; leader_changed=0; TimeChaos gone; integrity=1
 ```
 
 ## Cleanup

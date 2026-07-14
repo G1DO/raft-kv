@@ -113,9 +113,10 @@ Already done:
 
 Still in rough order:
 
-1. **Chaos Mesh experiments + postmortems** (Phase F) — measurement harness (#22),
-   pod-kill (#23), network-partition M8 gate (#24), and packet-loss (#25) are
-   scripted ([runbook](../runbooks/chaos.md)); clock-skew and incident writeups remain.
+1. **Chaos Mesh experiments + postmortems** (Phase F) — harness + pod-kill,
+   partition, packet-loss, and clock-skew injects are scripted
+   ([runbook](../runbooks/chaos.md)); incident writeups (#27) and multi-trial
+   publish (#28) remain.
 
 Client-side authentication, client TLS, and an authorisation model for
 membership changes (T2, T9) are *not* in M8 and are noted here so they

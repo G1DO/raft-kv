@@ -310,6 +310,7 @@ These are real and deliberate. Listed here so reviewers don't have to find them 
 | Chaos pod-kill experiment | Kill current leader once/trial; STS rejoins from PVC; integrity + MTTR via harness | Local `chaos-demo.sh` process SIGKILL | `./scripts/chaos-inject-pod-kill.sh` (Phase F #23) |
 | Chaos network partition (M8 gate) | Bidirectional `NetworkChaos` isolates leader; majority commits; default-deny NP stays on | Disable NP / kindnet-only / process-only demo | `./scripts/chaos-mesh-up.sh` + `./scripts/chaos-inject-network-partition.sh` ([runbook](runbooks/chaos.md)) |
 | Chaos packet-loss experiment | Bounded loss on leader↔followers; quorum stays; latency + leader-change logged | 100% loss (that is partition) | `./scripts/chaos-inject-packet-loss.sh` (Phase F #25) |
+| Chaos clock-skew experiment | Bounded `TimeChaos` on one non-leader; auto-rollback; observe availability | Permanent skew / skew leader first | `./scripts/chaos-inject-clock-skew.sh` (Phase F #26) |
 
 ## What I learned (cross-reference)
 

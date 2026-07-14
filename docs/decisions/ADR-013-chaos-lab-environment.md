@@ -76,8 +76,8 @@ harness can delete leftovers. Lab install: `scripts/chaos-mesh-up.sh`
 
 ### Out of scope for this ADR
 
-- Individual fault experiments (#26) and postmortems (#27).
-  (#23–#25 inject scripts are implemented.)
+- Postmortems (#27) and multi-trial publish (#28).
+  (#23–#26 inject scripts are implemented.)
 - Production multi-tenant Chaos Mesh operations.
 - Claiming clock-skew or partition results before the pinned versions above
   are actually installed and verified in the lab.
