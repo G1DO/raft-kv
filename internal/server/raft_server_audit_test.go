@@ -3,26 +3,55 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/G1DO/raft-kv/internal/metrics"
 )
 
+// syncBuffer guards concurrent slog writes vs test reads under -race.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func freeLocalAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr
+}
+
 func TestRaftServer_EmitsMutateAudit(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	dataDir := t.TempDir()
-	clientAddr := "127.0.0.1:19110"
-	raftAddr := "127.0.0.1:19111"
-	metricsAddr := "127.0.0.1:19112"
+	clientAddr := freeLocalAddr(t)
+	raftAddr := freeLocalAddr(t)
+	metricsAddr := freeLocalAddr(t)
 
 	srv, err := NewRaftServer(RaftConfig{
 		ID:          "node1",
@@ -95,11 +124,11 @@ func TestRaftServer_EmitsMutateAudit(t *testing.T) {
 }
 
 func TestServer_EmitsMutateAudit(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 
 	logPath := filepath.Join(t.TempDir(), "audit.log")
-	addr := "127.0.0.1:19120"
+	addr := freeLocalAddr(t)
 	defer os.Remove(logPath)
 
 	srv, err := NewServer(addr, logPath, logger)
@@ -134,11 +163,11 @@ func TestServer_EmitsMutateAudit(t *testing.T) {
 }
 
 func TestRaftServer_EmitsMembershipAudit(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	dataDir := t.TempDir()
-	clientAddr := fmt.Sprintf("127.0.0.1:%d", 19200+os.Getpid()%1000)
+	clientAddr := freeLocalAddr(t)
 
 	srv, err := NewRaftServer(RaftConfig{
 		ID:         "node1",

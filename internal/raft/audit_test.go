@@ -6,12 +6,37 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+// syncBuffer guards concurrent slog writes vs test reads (race detector).
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+func (s *syncBuffer) Bytes() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.b.Bytes()...)
+}
+
 func TestEmitPeerTLSAudit_Schema(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	r := NewRaft("node-a", nil, nil, t.TempDir()+"/log", t.TempDir()+"/state", t.TempDir()+"/snap", logger, nil)
 	defer r.Stop()
@@ -52,7 +77,7 @@ func TestMTLS_HandshakeFailureEmitsAudit(t *testing.T) {
 	mustWritePEM(t, caPath, "CERTIFICATE", caDER)
 	cert, key := mustGenLeaf(t, dir, "node-a", caDER, caKey)
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 	data := t.TempDir()
 	srv := NewRaft("node-a", nil, nil, data+"/log", data+"/state", data+"/snap", logger, nil)
@@ -90,7 +115,7 @@ func TestMTLS_IdentityRejectionEmitsAudit(t *testing.T) {
 	aCert, aKey := mustGenLeaf(t, dir, "node-a", caDER, caKey)
 	bCert, bKey := mustGenLeaf(t, dir, "node-b", caDER, caKey)
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewJSONHandler(&buf, nil))
 
 	dirA := t.TempDir()

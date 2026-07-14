@@ -1,6 +1,6 @@
 module github.com/G1DO/raft-kv
 
-go 1.25.11
+go 1.25.12
 
 require (
 	go.opentelemetry.io/otel v1.44.0
