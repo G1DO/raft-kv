@@ -5,6 +5,9 @@
 *.test
 *.out
 
+# Local tools / downloaded binaries (kyverno CLI, etc.)
+.bin/
+
 # Runtime data
 /data/
 /backups/
