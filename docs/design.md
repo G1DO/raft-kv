@@ -312,6 +312,7 @@ These are real and deliberate. Listed here so reviewers don't have to find them 
 | Chaos packet-loss experiment | Bounded loss on leader↔followers; quorum stays; latency + leader-change logged | 100% loss (that is partition) | `./scripts/chaos-inject-packet-loss.sh` (Phase F #25) |
 | Chaos clock-skew experiment | Bounded `TimeChaos` on one non-leader; auto-rollback; observe availability | Permanent skew / skew leader first | `./scripts/chaos-inject-clock-skew.sh` (Phase F #26) |
 | Chaos postmortems | One incident doc per fault with MTTR + cleanup proof | Planned-only follow-ups as “done” | [docs/incidents/](incidents/) (Phase F #27) |
+| Chaos multi-trial publish | ≥5 clean trials/class; p50/p95 in runbook + postmortems; raw under `backups/` | Single-trial anecdote as “verified percentile” | `./scripts/chaos-phase-f-28.sh` (Phase F #28) |
 
 ## What I learned (cross-reference)
 
