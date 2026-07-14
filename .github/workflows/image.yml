@@ -23,9 +23,7 @@ on:
       - ".github/workflows/image.yml"
 
 env:
-  # Fresh package name linked to this repo. The older ghcr.io/g1do/raft-kv package
-  # became orphaned after a repo recreate (GITHUB_TOKEN → write_package denied).
-  IMAGE: ghcr.io/g1do/raftkv
+  IMAGE: ghcr.io/g1do/raft-kv
 
 jobs:
   build:

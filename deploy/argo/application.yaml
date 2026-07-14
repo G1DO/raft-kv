@@ -42,7 +42,7 @@ spec:
         # Lowercase g1do: OCI registries require a lowercase path (verified against
         # image.yml). Deploy the signed image from the supply-chain pipeline.
         - name: image.repository
-          value: ghcr.io/g1do/raftkv
+          value: ghcr.io/g1do/raft-kv
         # Immutable, content-addressed tag (published by image.yml on push to main).
         # This is the GitOps rollout knob: bump this value in git and Argo rolls it out.
         - name: image.tag
