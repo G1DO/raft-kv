@@ -2,7 +2,7 @@
 
 Distributed key-value store built **from scratch** on the [Raft](https://raft.github.io/raft.pdf) consensus algorithm, in Go.
 
-**Code:** [github.com/G1DO/raft-kv2](https://github.com/G1DO/raft-kv2)
+**Code:** [github.com/G1DO/raft-kv](https://github.com/G1DO/raft-kv)
 
 ## Docs
 
