@@ -70,12 +70,14 @@ Before the next trial or before declaring a run complete:
 `scripts/chaos-harness.sh` (Phase F #22) encodes this checklist after every
 trial and at run end; failing cleanup is a failed trial, not a footnote.
 Inject scripts should label Chaos CRs with `raft-kv-chaos=true` so the
-harness can delete leftovers.
+harness can delete leftovers. Lab install: `scripts/chaos-mesh-up.sh`
+(Chaos Mesh **2.8.3**); partition gate: `scripts/chaos-inject-network-partition.sh`
+([runbook](../runbooks/chaos.md)).
 
 ### Out of scope for this ADR
 
-- Individual fault experiments (#24–#26) and postmortems (#27).
-  (#23 pod-kill inject: `scripts/chaos-inject-pod-kill.sh`.)
+- Individual fault experiments (#25–#26) and postmortems (#27).
+  (#23 pod-kill / #24 partition inject scripts are implemented.)
 - Production multi-tenant Chaos Mesh operations.
 - Claiming clock-skew or partition results before the pinned versions above
   are actually installed and verified in the lab.

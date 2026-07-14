@@ -603,7 +603,10 @@ time to 3/3 Ready, integrity readback, percentiles, ADR-013 cleanup:
 ```bash
 ./scripts/chaos-harness.sh --trials 3 --inject 'true'   # noop smoke
 ./scripts/chaos-harness.sh --trials 5 --inject './scripts/chaos-inject-pod-kill.sh'  # #23
-# later: network-partition / packet-loss / clock-skew inject scripts for #24–#26
+PARTITION_DURATION=30s ./scripts/chaos-harness.sh --trials 5 \
+  --inject './scripts/chaos-inject-network-partition.sh'  # #24 M8 gate
+# Install Chaos Mesh first: ./scripts/chaos-mesh-up.sh  (see docs/runbooks/chaos.md)
+# later: packet-loss / clock-skew inject scripts for #25–#26
 ```
 
 <!-- TODO: record an asciinema cast of chaos-demo.sh and link it here:
@@ -686,6 +689,7 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
 - [docs/runbooks/tls-certificates.md](docs/runbooks/tls-certificates.md) — Vault/ESO peer TLS bootstrap, renewal, revocation
 - [docs/runbooks/networkpolicy.md](docs/runbooks/networkpolicy.md) — default-deny NetworkPolicy boundary + verification
 - [docs/runbooks/audit.md](docs/runbooks/audit.md) — app security audit in Loki (LogQL + `./scripts/verify-audit.sh`)
+- [docs/runbooks/chaos.md](docs/runbooks/chaos.md) — Chaos Mesh 2.8.3 lab + Phase F inject scripts (#23–#24)
 - [deploy/platform/tls-delivery/README.md](deploy/platform/tls-delivery/README.md) — scoped Vault policy + ESO RBAC examples
 - [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; peer mTLS status + M8 residuals.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured election MTTR, throughput, and quorum-loss behaviour, with the exact method.
