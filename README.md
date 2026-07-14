@@ -693,6 +693,7 @@ When a follower receives a snapshot, it has to throw away its entire log and sta
 - [docs/runbooks/networkpolicy.md](docs/runbooks/networkpolicy.md) — default-deny NetworkPolicy boundary + verification
 - [docs/runbooks/audit.md](docs/runbooks/audit.md) — app security audit in Loki (LogQL + `./scripts/verify-audit.sh`)
 - [docs/runbooks/chaos.md](docs/runbooks/chaos.md) — Chaos Mesh 2.8.3 lab + Phase F inject scripts (#23–#26)
+- [docs/incidents/](docs/incidents/) — Phase F postmortems (pod-kill, partition, packet-loss, clock-skew)
 - [deploy/platform/tls-delivery/README.md](deploy/platform/tls-delivery/README.md) — scoped Vault policy + ESO RBAC examples
 - [docs/threat-model.md](docs/threat-model.md) — STRIDE-lite; peer mTLS status + M8 residuals.
 - [docs/benchmarks.md](docs/benchmarks.md) — measured election MTTR, throughput, and quorum-loss behaviour, with the exact method.

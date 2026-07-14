@@ -106,3 +106,16 @@ kubectl -n default get pods -l app=raft-kv   # expect 3/3 Ready
 ```
 
 Failing cleanup is a failed trial — do not start the next inject until Ready.
+
+## Postmortems (Phase F #27)
+
+Incident write-ups for each fault class (same template):
+
+- [pod-kill](../incidents/pod-kill.md)
+- [network-partition](../incidents/network-partition.md) (M8 gate)
+- [packet-loss](../incidents/packet-loss.md)
+- [clock-skew](../incidents/clock-skew.md)
+
+Index: [docs/incidents/README.md](../incidents/README.md). Multi-trial percentile
+publish is Phase F **#28**.
+

@@ -113,10 +113,10 @@ Already done:
 
 Still in rough order:
 
-1. **Chaos Mesh experiments + postmortems** (Phase F) — harness + pod-kill,
-   partition, packet-loss, and clock-skew injects are scripted
-   ([runbook](../runbooks/chaos.md)); incident writeups (#27) and multi-trial
-   publish (#28) remain.
+1. **Chaos Mesh multi-trial publish** (Phase F #28) — harness + injects +
+   postmortems (#22–#27) are in place ([runbook](../runbooks/chaos.md),
+   [incidents](../incidents/)); ≥5 clean trials per fault and published
+   percentiles remain.
 
 Client-side authentication, client TLS, and an authorisation model for
 membership changes (T2, T9) are *not* in M8 and are noted here so they
