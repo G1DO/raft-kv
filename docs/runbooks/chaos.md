@@ -39,6 +39,10 @@ kubectl get crd networkchaos.chaos-mesh.org podchaos.chaos-mesh.org
 # #24 network partition (M8 gate) — requires Chaos Mesh + Calico + default-deny
 PARTITION_DURATION=30s ./scripts/chaos-harness.sh --trials 5 \
   --inject './scripts/chaos-inject-network-partition.sh'
+
+# #25 packet loss (bounded; quorum stays healthy)
+PACKET_LOSS_PERCENT=25 PACKET_LOSS_DURATION=30s ./scripts/chaos-harness.sh --trials 5 \
+  --inject './scripts/chaos-inject-packet-loss.sh'
 ```
 
 Inject scripts label Chaos CRs with `raft-kv-chaos=true`. The harness deletes
@@ -52,6 +56,15 @@ While the leader is partitioned from both followers:
 - PUT via the majority → `OK`
 - Default-deny NetworkPolicies remain present before and after
 
+### #25 proofs (per trial)
+
+While bounded loss is applied on **leader ↔ followers** (not a full cut):
+
+- At least one (usually most) client PUTs succeed — quorum stays healthy
+- Sample commit latency (p50/p95) is logged
+- Leadership change is reported explicitly (`changed=0|1`)
+- After CR deletion, a recovery PUT succeeds
+
 ### Verified on kind (2026-07-14)
 
 Cluster: kind `raft-kv`, Calico, Chaos Mesh **2.8.3** in `chaos-mesh`,
@@ -62,6 +75,10 @@ raft-kv in `default` with default-deny NetworkPolicy.
   --inject './scripts/chaos-inject-network-partition.sh'
 # old leader: ERROR: timeout waiting for commit
 # majority: OK; leader raft-kv-0→raft-kv-1; integrity=1; NP still present
+
+PACKET_LOSS_PERCENT=25 ./scripts/chaos-harness.sh --trials 1 \
+  --inject './scripts/chaos-inject-packet-loss.sh'
+# probes ok=12 fail=0; leadership changed recorded; integrity=1
 ```
 
 ## Cleanup
