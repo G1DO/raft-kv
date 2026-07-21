@@ -2,10 +2,35 @@
 
 A distributed key-value store built on the Raft consensus algorithm. From scratch, in Go.
 
-> **Status:** The single-node KV store (PUT/GET/DELETE over TCP, persistent WAL) runs
-> today. The full Raft layer — leader election, log replication, snapshots, dynamic
-> membership — is implemented and tested as a library, but is not yet wired into the
-> runnable binary; doing so is the next milestone.
+> **Status:** With no flags the binary runs a single-node KV store (PUT/GET/DELETE over
+> TCP, persistent WAL). Pass `--id` (or use `./scripts/cluster-up.sh`) for a multi-node
+> Raft cluster with leader election, log replication, snapshots, and dynamic membership.
+
+## Quick start
+
+Requires **Go 1.25.12+** and `nc` (netcat).
+
+```bash
+# Build
+go build -o raft-kv ./cmd/server
+
+# Single node (no Raft) on localhost:8080
+./raft-kv
+
+# Smoke test the line protocol (case-sensitive, single-space-delimited)
+printf 'PUT foo bar\nGET foo\nDELETE foo\nGET foo\n' | nc localhost 8080
+# OK / bar / OK / NOT_FOUND
+
+# Unit tests
+go test ./...
+# Faster while iterating: go test ./internal/raft/... -v
+
+# Local 3-node Raft cluster (client ports 8081/8082/8083)
+./scripts/cluster-up.sh
+# Followers reply NOT_LEADER <addr> — retry against that address.
+```
+
+See **[Running](#running)** for flags and membership commands, and **[Testing](#testing)** for package-scoped test details.
 
 ## What is this?
 
