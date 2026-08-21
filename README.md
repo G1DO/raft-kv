@@ -4,7 +4,16 @@ A distributed key-value store built on the Raft consensus algorithm. From scratc
 
 > **Status:** With no flags the binary runs a single-node KV store (PUT/GET/DELETE over
 > TCP, persistent WAL). Pass `--id` (or use `./scripts/cluster-up.sh`) for a multi-node
-> Raft cluster with leader election, log replication, snapshots, and dynamic membership.
+> Raft cluster with leader election, log replication, snapshots, and an implemented
+> dynamic-membership path. The current supported target being revalidated is a fixed
+> three-node cluster; dynamic membership remains experimental.
+>
+> **Guarantee status:** The repository contains substantive implementations and historical
+> test/benchmark evidence, but the current project is re-auditing persistence/crash
+> boundaries, the ReadIndex leadership barrier, public retry identity, and membership
+> safety before treating the strongest consistency and durability claims as independently
+> proven. Treat measured results below as evidence for their declared environment, not as
+> universal or production guarantees.
 
 ## Quick start
 
@@ -34,7 +43,7 @@ See **[Running](#running)** for flags and membership commands, and **[Testing](#
 
 ## What is this?
 
-Multiple servers that agree on data, even when some crash or lose network connectivity. Write to one node, the cluster makes sure everyone agrees, your data survives failures.
+Multiple servers coordinate through Raft so a quorum can order replicated state changes despite selected process and network failures. The repository exercises that behavior in local tests, benchmarks, and chaos labs; the exact supported durability and consistency guarantees are being revalidated against an explicit fault model.
 
 This is how real systems like **etcd**, **CockroachDB**, and **TiKV** work under the hood. I built it to actually understand it, not just read about it.
 
@@ -57,7 +66,7 @@ This is how real systems like **etcd**, **CockroachDB**, and **TiKV** work under
  |  Node 2   |   |  Node 3   |   |  Node 4   |
  +-----------+   +-----------+   +-----------+
 
- If leader dies -> followers elect new one -> no data loss
+ If leader dies -> remaining quorum can elect a new leader
 ```
 
 ---
@@ -96,7 +105,7 @@ The trick is randomized timeouts. Without them, all nodes would timeout at the s
 
 ### Log Replication
 
-Leader gets a command, writes it to its log, sends it to followers. Once a majority have it, the entry is "committed" — meaning it's safe and won't be lost even if the leader crashes.
+The leader accepts a command, appends it to its log, and replicates it to followers. In Raft, an entry becomes committed after the protocol's quorum/term conditions are satisfied. Whether this implementation preserves every acknowledged mutation across a particular crash or storage fault also depends on correct persistence and recovery behavior, which is part of the current revalidation work.
 
 ```
   Leader Log:     [PUT x=1] [PUT y=2] [DEL x]
@@ -106,10 +115,11 @@ Leader gets a command, writes it to its log, sends it to followers. Once a major
   Follower 2:     [PUT x=1] [PUT y=2]           <-- slightly behind
   Follower 3:     [PUT x=1]                     <-- more behind
 
-  Committed = majority has it = safe forever
+  Committed = accepted by the Raft commit rule; durability still depends on
+              correct persistence/recovery within the declared fault model
 ```
 
-There's a subtle distinction here: "committed" means it's replicated to a majority (safe). "Applied" means the state machine actually executed it. A committed entry might not be applied yet — this confused me for a while.
+There's a subtle distinction here: "committed" is a consensus state; "applied" means the state machine actually executed the entry. A committed entry might not be applied yet. Do not read the word *committed* here as a blanket power-loss or "safe forever" claim about the current implementation.
 
 ### Persistence
 
@@ -132,6 +142,8 @@ Everything important goes to disk. When a node restarts, it reloads:
 +-----------+                   +-----------+
 ```
 
+The current persistence format and recovery paths are real implementation, but their exact fsync, torn-tail, corruption, partial-write, and power-loss guarantees are being audited rather than inferred from the presence of WAL files alone.
+
 ### Duplicate Detection
 
 Networks are unreliable. Clients retry requests when they don't get a response. Without deduplication, a retry could execute the same command twice.
@@ -147,7 +159,7 @@ Networks are unreliable. Clients retry requests when they don't get a response. 
   Counter is 1, not 2.
 ```
 
-Each client has a unique ID and a monotonically increasing request ID. The server remembers the last request ID per client and rejects anything it's already seen.
+The state machine contains client/request-ID deduplication logic. The public text protocol shown in this README does **not** currently carry those IDs, so retry deduplication is not a supported guarantee for that protocol; see the Running limitation below.
 
 ### Snapshots
 
@@ -165,7 +177,7 @@ Logs grow forever. After a while, you don't want to store every command since th
   Same state, way less storage.
 ```
 
-Snapshots are persisted to disk using an atomic write pattern (write to temp file, then rename) to prevent corruption during crashes.
+Snapshots use a temp-file-and-rename persistence pattern. That is part of the crash-safety strategy, but it is not by itself proof of a power-loss-safe snapshot contract; file and directory durability are part of the current persistence audit.
 
 ### InstallSnapshot RPC
 
@@ -177,19 +189,19 @@ When a follower falls too far behind — the entries it needs have already been 
 
   Follower receives snapshot:
     1. Verify term (reject stale leaders)
-    2. Persist snapshot to disk (crash safety)
+    2. Persist snapshot to disk
     3. Discard log entries covered by snapshot
     4. Signal state machine to restore from snapshot
     5. Update commitIndex and lastApplied
 ```
 
-This is essential for adding new nodes to a cluster — they can't replay a log from the beginning of time.
+This mechanism lets a far-behind follower catch up without replaying compacted history. Its crash-boundary guarantees are subject to the same persistence revalidation described above.
 
-### Linearizable Reads (ReadIndex)
+### ReadIndex-style reads
 
 Problem: A partitioned leader might serve stale data. It doesn't know it's been replaced.
 
-Solution: Before serving a read, confirm you're still leader.
+The implementation uses a ReadIndex-style path: before serving the supported leader read, it tries to confirm current leadership with a quorum.
 
 ```
   Client: GET x
@@ -202,11 +214,11 @@ Solution: Before serving a read, confirm you're still leader.
     5. If no majority -> reject (might be partitioned)
 ```
 
-This guarantees reads see all committed writes, even during network partitions.
+This is intended to support linearizable reads. The current project is revalidating the full leadership-barrier argument and its interaction with persistence before describing linearizability as independently proven for the supported configuration.
 
-### Dynamic Cluster Membership
+### Dynamic Cluster Membership (experimental)
 
-Servers can be added or removed at runtime using single-server changes. The key insight: changing one server at a time guarantees old and new majorities overlap.
+The repository implements runtime add/remove commands using single-server configuration changes. The design is intended to maintain quorum overlap while changing membership one server at a time, but this path is **experimental and outside the current supported guarantee** until it is separately specified and proven.
 
 ```
   3-node cluster: [A, B, C]
@@ -214,15 +226,12 @@ Servers can be added or removed at runtime using single-server changes. The key 
 
   Adding D:
   - Leader logs config change: AddServer(D)
-  - Config takes effect IMMEDIATELY (when logged, not committed)
+  - Implementation updates its active configuration at the logged boundary
   - Now 4-node cluster: [A, B, C, D]
   - New majority = 3
-  - Old majority (2) and new majority (3) overlap
-
-  This overlap prevents split-brain.
 ```
 
-Config changes are stored in the log and replayed on restart. When a leader removes itself, it steps down to follower.
+Config changes are stored in the log and replayed on restart. When a leader removes itself, it steps down to follower. Those are implementation behaviors, not a claim that arbitrary membership transitions are currently proven safe.
 
 ---
 
@@ -361,8 +370,7 @@ The quickest way to start a local 3-node cluster:
 ./scripts/cluster-up.sh        # nodes on client ports 8081/8082/8083
 ```
 
-Only the **leader** accepts writes and serves linearizable reads (via ReadIndex). A
-non-leader replies `NOT_LEADER <leaderClientAddr>` — point your client at that address:
+Only the **leader** accepts writes. Reads use the repository's ReadIndex-style leadership-confirmation path. A non-leader replies `NOT_LEADER <leaderClientAddr>` — point your client at that address:
 
 ```bash
 $ printf 'PUT foo bar\n' | nc localhost 8081
@@ -372,16 +380,14 @@ OK
 bar
 ```
 
-Membership can be changed at runtime against the leader:
+Membership commands are implemented and may be exercised against the leader, but they remain experimental:
 
 | Command | Result |
 |---|---|
 | `ADD_SERVER <id> <raftAddr>` | `OK` (or `NOT_LEADER <addr>`) |
 | `REMOVE_SERVER <id> <raftAddr>` | `OK` (or `NOT_LEADER <addr>`) |
 
-`kill -9` the leader and a new one is elected within a couple of seconds; committed data
-is preserved and a restarted node rejoins by replaying its data dir. Nodes shut down
-gracefully on SIGINT/SIGTERM (step down, close listener).
+In historical local trials, killing the leader caused the remaining quorum to elect a replacement and allowed a restarted node to replay its data directory. Those observations do not establish a blanket no-data-loss or power-loss guarantee; the exact persistence and recovery boundary is being revalidated. Nodes shut down gracefully on SIGINT/SIGTERM (step down, close listener).
 
 > **Known limitation:** the text protocol sends raw commands with no client/request id,
 > so write retries across a failover are *at-least-once* (the `KVStore` dedup in
@@ -573,8 +579,9 @@ Backup/restore (wipe vs disaster) and measured MTTR:
   updates — rolling updates are serialized by the Ready gate, not the PDB.
 - **No HPA** — more voters do not increase write throughput (every write still
   needs a majority), and autoscaler scale-down can destroy quorum. Membership
-  changes are deliberate one-at-a-time Raft config changes. Read replicas would
-  need non-voting learners (not implemented).
+  changes are deliberate one-at-a-time Raft config changes in the current
+  implementation; they remain experimental until the membership safety contract
+  is separately revalidated. Read replicas would need non-voting learners (not implemented).
 - **Rolling updates** — explicit `RollingUpdate`; optional `partition` for a
   one-pod canary. Serialized by `/readyz`, not the PDB. See
   [design.md](docs/design.md#binary-upgrades-one-pod-canary).
@@ -607,7 +614,12 @@ loopback numbers — the point is the *shape*, not datacenter figures.
 |---|---|---|
 | **Election MTTR** (kill leader → new leader serves writes) | **p50 244 ms · p99 342 ms** over 100 trials | `go run ./cmd/bench mttr` |
 | **Write throughput** | peak **~144 writes/sec** (8 clients); latency floor **~50 ms** = the heartbeat interval | `go run ./cmd/bench throughput` |
-| **Quorum loss** | minority leader **refuses** the linearizable read (`NOT_LEADER`); recovers in ~50 ms, data preserved | `go run ./cmd/bench partition` |
+| **Quorum-loss experiment** | minority leader refused the ReadIndex-style read in the measured run; observed recovery ~50 ms | `go run ./cmd/bench partition` |
+
+These are historical results from the declared local harness, not proofs of a universal
+consistency or durability guarantee. In particular, the current project is revalidating
+the ReadIndex leadership barrier and persistence/crash boundaries before promoting those
+properties to supported guarantees.
 
 Two honest findings worth calling out: write latency is floored at the **50 ms
 heartbeat interval** (replication is heartbeat-driven), and throughput **collapses
@@ -646,54 +658,56 @@ CLOCK_SKEW_OFFSET=+5m ./scripts/chaos-harness.sh --trials 3 \
 
 ## What I learned building this
 
-**1. Randomized timeouts aren't optional**
+**1. Randomized timeouts aren't optional for this election design**
 
-I tried fixed timeouts first. Nodes kept timing out at the same time, all became candidates, split the vote, timed out again... forever. Random jitter fixes it. The Raft paper mentions this but you don't really feel it until you watch your cluster deadlock.
+I tried fixed timeouts first. Nodes kept timing out at the same time, all became candidates, split the vote, timed out again... forever. Random jitter fixed that behavior in this implementation.
 
 **2. "Committed" ≠ "Applied"**
 
-This tripped me up. An entry is committed when a majority has it — it's safe. But it's not applied until the state machine actually executes it. A leader might have committed entries it hasn't applied yet. You have to track both.
+This tripped me up. Raft distinguishes the commit index from state-machine application. That distinction is essential, but a committed entry is not by itself evidence that this implementation is power-loss safe; persistence and recovery still have to satisfy the declared durability contract.
 
 **3. Duplicate detection is harder than it looks**
 
-My first attempt: `if requestId == lastRequestId { return cached }`. Wrong. Old requests can arrive late due to network delays. You need `requestId <= lastRequestId` to catch stale messages. And you have to persist this across restarts. And include it in snapshots.
+My first attempt: `if requestId == lastRequestId { return cached }`. Wrong. Old requests can arrive late due to network delays. You need `requestId <= lastRequestId` to catch stale messages. And you have to persist this across restarts and include it in snapshots. The current public text protocol still lacks client/request IDs, so this mechanism is not a public retry guarantee yet.
 
 **4. Snapshots need to include dedup state**
 
-I forgot this initially. After restoring from a snapshot, old duplicate requests would execute again because the server didn't remember what it had already processed. The snapshot has to include the duplicate detection tables, not just the key-value data.
+I forgot this initially. After restoring from a snapshot, old duplicate requests could execute again if the server did not restore its deduplication state. The current snapshot design includes that state; the surrounding persistence guarantees are being revalidated separately.
 
 **5. Index math after compaction is annoying**
 
 After you snapshot and throw away log entries, `log[0]` isn't index 1 anymore. You need `lastIncludedIndex` to convert between array indices and logical Raft indices. Off-by-one errors everywhere until I got this right.
 
-**6. Config changes must take effect immediately**
+**6. Membership timing is a protocol decision, not a cosmetic implementation detail**
 
-I initially thought membership changes should take effect when committed, like regular commands. Wrong. They take effect when *logged*. Why? Consider adding a fourth node: if you wait for commit, the new node might already be receiving entries but isn't counted in the majority calculation. The Raft paper is subtle here.
+This implementation applies its single-server membership configuration at the logged boundary, as recorded in ADR-001. The important lesson is that quorum membership changes affect safety immediately; the current path remains experimental until its full safety argument is revalidated.
 
-**7. Single-server changes prevent split-brain**
+**7. Majority overlap has to be proven for every supported membership transition**
 
-You can't add multiple servers at once. With 3 nodes, adding 2 simultaneously could let the new nodes form a majority (3/5) while the old nodes also have a majority (2/3). Disaster. One at a time guarantees old and new majorities always overlap.
+Changing membership one server at a time is intended to preserve overlap in this design, but the repository no longer treats that intent as a blanket split-brain guarantee. The supported membership model will be claimed only after the transition rules and failure cases are independently checked.
 
-**8. ReadIndex needs to confirm leadership**
+**8. ReadIndex-style reads need a real leadership barrier**
 
-A partitioned leader can keep serving reads forever without knowing it's been replaced. The solution is simple but non-obvious: before serving any read, send heartbeats and wait for majority response. If you can't reach a majority, you might be partitioned — reject the read.
+A partitioned leader can serve stale data if it cannot establish that it is still authoritative. This implementation uses majority heartbeat confirmation before the read. The current audit is checking whether that path, including current-term and persistence assumptions, is sufficient for the exact linearizability claim.
 
 **9. Snapshot installation is where things get weird**
 
-When a follower receives a snapshot, it has to throw away its entire log and state machine. But what if there are log entries *after* the snapshot boundary? Keep them. And always persist the snapshot *before* updating in-memory state — crashes happen.
+When a follower receives a snapshot, it has to reconcile the snapshot boundary with any later log entries and update durable/in-memory state in a safe order. The implementation persists the snapshot before applying the in-memory transition; the exact crash guarantees of that sequence remain part of the persistence audit.
 
 ---
 
-## What's done
+## What's implemented
 
 - [x] **Phase 1: Foundation** — Persistent log, KV state machine, TCP server
 - [x] **Phase 2: Leader Election** — Terms, voting, election timeout, heartbeats
 - [x] **Phase 3: Log Replication** — AppendEntries, conflict resolution, commit logic
-- [x] **Phase 4: Safety** — Persistence, duplicate detection
+- [x] **Phase 4: Persistence & dedup mechanisms** — persistent term/vote/log paths and state-machine deduplication
 - [x] **Phase 5: Snapshots** — Log compaction, state serialization, snapshot persistence
 - [x] **Phase 6: InstallSnapshot RPC** — Snapshot transfer to far-behind followers
-- [x] **Phase 7: Linearizable Reads** — ReadIndex for consistent reads
-- [x] **Phase 8: Cluster Membership** — Dynamic add/remove servers
+- [x] **Phase 7: ReadIndex-style read path** — leadership confirmation before leader reads
+- [x] **Phase 8: Dynamic membership implementation (experimental)** — runtime add/remove path; not part of the current supported guarantee
+
+Implemented does not mean independently proven. The current project is revalidating the supported fixed three-node guarantees before extending the system with transactional work.
 
 ---
 
